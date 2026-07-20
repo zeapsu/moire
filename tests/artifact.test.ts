@@ -22,6 +22,13 @@ describe("artifact validation", () => {
     expect(result.errors.join(" ")).toContain("network");
   });
 
+  it("scans inline event-handler code for prohibited network and navigation behavior", () => {
+    const fetchHandler = valid2d.replace("<canvas></canvas>", `<button onclick="fetch('https://evil.example')">Run</button><canvas></canvas>`);
+    const navigationHandler = valid2d.replace("<canvas></canvas>", `<button onclick="window.location='https://evil.example'">Run</button><canvas></canvas>`);
+    expect(validateArtifact(fetchHandler, "2d").errors.join(" ")).toContain("network");
+    expect(validateArtifact(navigationHandler, "2d").errors.join(" ")).toContain("navigation");
+  });
+
   it("rejects relative and protocol-relative network surfaces", () => {
     expect(validateArtifact(valid2d.replace("<canvas></canvas>", '<img src="//tracker.example/pixel">'), "2d").ok).toBe(false);
     expect(validateArtifact(valid2d.replace("<canvas></canvas>", '<script src="/remote.js"></script>'), "2d").ok).toBe(false);

@@ -100,6 +100,10 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
     errors.push("Artifact contains a prohibited embedded or navigational element.");
   }
   const scriptText = [...document.querySelectorAll("script")].map((script) => script.textContent ?? "").join("\n");
+  const eventHandlerText = [...document.querySelectorAll("*")]
+    .flatMap((element) => [...element.attributes].filter((attribute) => /^on/i.test(attribute.name)).map((attribute) => attribute.value))
+    .join("\n");
+  const executableText = `${scriptText}\n${eventHandlerText}`;
   const hasReadyPayload = /(?:["']ready["']|\bready)\s*:\s*true\b/i.test(scriptText);
   if (!/\bpostMessage\s*\(/i.test(scriptText) || !hasReadyPayload) {
     errors.push("Artifact must postMessage({ready:true}) after initialization.");
@@ -113,32 +117,32 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   } else if (sliderIds.some((id) => !scriptText.includes(id))) {
     errors.push("Every parameter slider id must be referenced by the artifact JavaScript.");
   }
-  if (sliders.length > 0 && !/addEventListener\s*\(\s*["']input["']|\.oninput\s*=/i.test(scriptText)) {
+  if (sliders.length > 0 && !/addEventListener\s*\(\s*["']input["']|\.oninput\s*=|\boninput\s*=/i.test(executableText)) {
     errors.push("Parameter sliders must bind an input event handler.");
   }
 
   const prohibitedNetworkApis = /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|Worker|SharedWorker|import)\s*\(/i;
-  if (prohibitedNetworkApis.test(scriptText)) errors.push("Artifact uses a prohibited network API.");
+  if (prohibitedNetworkApis.test(executableText)) errors.push("Artifact uses a prohibited network API.");
   const isSafeAssignedUrl = (expression: string) => /^["'`](?:data:|blob:|#)/i.test(expression.trim());
-  const propertyAssignments = [...scriptText.matchAll(/\.(?:src|href)\s*=\s*([^;\n]+)/gi)].map((match) => match[1]);
+  const propertyAssignments = [...executableText.matchAll(/\.(?:src|href)\s*=\s*([^;\n]+)/gi)].map((match) => match[1]);
   const attributeAssignments = [
-    ...scriptText.matchAll(/setAttribute\s*\(\s*["'](?:src|href)["']\s*,\s*([^,)]+)/gi),
+    ...executableText.matchAll(/setAttribute\s*\(\s*["'](?:src|href)["']\s*,\s*([^,)]+)/gi),
   ].map((match) => match[1]);
   if ([...propertyAssignments, ...attributeAssignments].some((expression) => !isSafeAssignedUrl(expression))) {
     errors.push("Artifact JavaScript may not assign network-capable element URLs.");
   }
   const explicitNavigation =
     /\b(?:window|globalThis|self|top|parent|document)\.location(?:\.href)?\s*=|\b(?:window|globalThis|self|top|parent|document)\.location\.(?:assign|replace)\s*\(|\b(?:window|globalThis|self|top|parent)\.open\s*\(/i.test(
-      scriptText,
+      executableText,
     );
   const declaresLocalLocation =
-    /\b(?:let|const|var|class|function)\s+location\b|(?:\(|,)\s*location\s*(?:[,)=])/i.test(scriptText);
+    /\b(?:let|const|var|class|function)\s+location\b|(?:\(|,)\s*location\s*(?:[,)=])/i.test(executableText);
   const bareLocationNavigation =
-    /(?<![.\w$])location(?:\.href)?\s*=|(?<![.\w$])location\.(?:assign|replace)\s*\(/i.test(scriptText);
+    /(?<![.\w$])location(?:\.href)?\s*=|(?<![.\w$])location\.(?:assign|replace)\s*\(/i.test(executableText);
   if (explicitNavigation || (bareLocationNavigation && !declaresLocalLocation)) {
     errors.push("Artifact attempts navigation.");
   }
-  const literalUrls = [...scriptText.matchAll(/["'`]((?:https?:)?\/\/[^\s"'`<>\\)]+)["'`]/gi)].map((match) =>
+  const literalUrls = [...executableText.matchAll(/["'`]((?:https?:)?\/\/[^\s"'`<>\\)]+)["'`]/gi)].map((match) =>
     match[1].replace(/[;,]+$/, ""),
   );
   if (literalUrls.some((url) => url !== THREE_JS_URL)) errors.push("Artifact contains a non-allowlisted URL literal.");

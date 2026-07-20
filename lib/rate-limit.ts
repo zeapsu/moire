@@ -2,13 +2,22 @@ type WindowEntry = { count: number; resetsAt: number };
 
 const windows = new Map<string, WindowEntry>();
 
-export function clientAddress(request: Request): string {
-  const forwarded = request.headers
-    .get("x-forwarded-for")
+function lastForwardedAddress(value: string | null): string | null {
+  return value
     ?.split(",")
     .map((address) => address.trim())
-    .filter(Boolean);
-  return forwarded?.at(-1) || request.headers.get("x-real-ip")?.trim() || "local";
+    .filter(Boolean)
+    .at(-1) ?? null;
+}
+
+export function clientAddress(request: Request): string {
+  if (process.env.VERCEL !== "1") return "non-vercel";
+  return (
+    lastForwardedAddress(request.headers.get("x-vercel-forwarded-for")) ||
+    lastForwardedAddress(request.headers.get("x-forwarded-for")) ||
+    request.headers.get("x-real-ip")?.trim() ||
+    "vercel-unknown"
+  );
 }
 
 export function takeRateLimit(key: string, limit: number, windowMs: number): { allowed: boolean; retryAfter: number } {
