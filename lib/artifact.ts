@@ -1,6 +1,6 @@
 import { JSDOM } from "jsdom";
 import { getOpenAI } from "@/lib/openai";
-import type { ArtifactResult, ArtifactValidation, VisualizationBrief } from "@/lib/types";
+import { emptyRepairState, type ArtifactResult, type ArtifactValidation, type RepairStage, type RepairState, type VisualizationBrief } from "@/lib/types";
 
 export const THREE_JS_URL = "https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js";
 const MAX_ARTIFACT_BYTES = 200 * 1024;
@@ -186,11 +186,17 @@ async function callGenerator(instructions: string): Promise<string> {
   return response.output_text.trim();
 }
 
-async function repairOnce(brief: VisualizationBrief, invalidHtml: string, errors: string[]): Promise<string> {
+async function repairOnce(
+  brief: VisualizationBrief,
+  invalidHtml: string,
+  stage: RepairStage,
+  errors: string[],
+): Promise<string> {
   const prior = new JSDOM(invalidHtml);
   prior.window.document.querySelectorAll("meta[data-moire-csp]").forEach((meta) => meta.remove());
+  const failureContext = stage === "validation" ? "server-side contract validation" : "browser execution";
   return callGenerator(
-    `${generatorInstructions(brief)}\n\nThe prior attempt below failed validation. Repair it and return a full replacement HTML file.\nValidation errors:\n- ${errors.join("\n- ")}\n<invalid_artifact>\n${prior.serialize()}\n</invalid_artifact>`,
+    `${generatorInstructions(brief)}\n\nThe prior attempt below failed ${failureContext}. Repair it and return a full replacement HTML file.\n${stage === "validation" ? "Validation" : "Runtime"} diagnostics:\n- ${errors.join("\n- ")}\n<invalid_artifact>\n${prior.serialize()}\n</invalid_artifact>`,
   );
 }
 
@@ -211,27 +217,58 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
   return `<!doctype html>\n${document.documentElement.outerHTML}`;
 }
 
-function successfulArtifact(html: string, render: "2d" | "3d", repairUsed: boolean): ArtifactResult {
+function recordFailure(state: RepairState, stage: RepairStage, message: string): RepairState {
+  return { ...state, lastFailure: { stage, message: message.slice(0, 2000) } };
+}
+
+function validateForDelivery(
+  html: string,
+  render: "2d" | "3d",
+  expectedParameters: number,
+): ArtifactValidation {
+  const validation = validateArtifact(html, render, expectedParameters);
+  if (!validation.ok) return validation;
+  const securedBytes = Buffer.byteLength(withArtifactCsp(html, render), "utf8");
+  return securedBytes <= MAX_ARTIFACT_BYTES
+    ? validation
+    : {
+        ok: false,
+        errors: [`Artifact is ${securedBytes} bytes after security policy injection; the limit is ${MAX_ARTIFACT_BYTES}.`],
+        bytes: securedBytes,
+      };
+}
+
+function successfulArtifact(html: string, render: "2d" | "3d", repairState: RepairState): ArtifactResult {
   const secured = withArtifactCsp(html, render);
   if (Buffer.byteLength(secured, "utf8") > MAX_ARTIFACT_BYTES) {
-    return { ok: false, error: "The visualization exceeded 200KB after security policy injection.", repairUsed };
+    return {
+      ok: false,
+      error: "The visualization exceeded 200KB after security policy injection.",
+      repairState: recordFailure(repairState, "validation", "Artifact exceeded 200KB after security policy injection."),
+    };
   }
-  return { ok: true, html: secured, repairUsed };
+  return { ok: true, html: secured, repairState };
 }
 
 export async function generateArtifact(brief: VisualizationBrief): Promise<ArtifactResult> {
   return runArtifactTask(async () => {
+    const initialState = emptyRepairState();
     const initial = await callGenerator(generatorInstructions(brief));
-    const initialValidation = validateArtifact(initial, brief.render, brief.parameters.length);
-    if (initialValidation.ok) return successfulArtifact(initial, brief.render, false);
+    const initialValidation = validateForDelivery(initial, brief.render, brief.parameters.length);
+    if (initialValidation.ok) return successfulArtifact(initial, brief.render, initialState);
 
-    const repaired = await repairOnce(brief, initial, initialValidation.errors);
-    const repairedValidation = validateArtifact(repaired, brief.render, brief.parameters.length);
-    if (repairedValidation.ok) return successfulArtifact(repaired, brief.render, true);
+    const validationRepairState: RepairState = {
+      attempts: { validation: 1, runtime: 0 },
+      lastFailure: { stage: "validation", message: initialValidation.errors.join(" ").slice(0, 2000) },
+    };
+    const repaired = await repairOnce(brief, initial, "validation", initialValidation.errors);
+    const repairedValidation = validateForDelivery(repaired, brief.render, brief.parameters.length);
+    if (repairedValidation.ok) return successfulArtifact(repaired, brief.render, validationRepairState);
+    const terminalState = recordFailure(validationRepairState, "validation", repairedValidation.errors.join(" "));
     return {
       ok: false,
       error: `The visualization failed its safety checks after one repair: ${repairedValidation.errors.join(" ")}`,
-      repairUsed: true,
+      repairState: terminalState,
     };
   });
 }
@@ -240,12 +277,25 @@ export async function repairRuntimeFailure(
   brief: VisualizationBrief,
   invalidHtml: string,
   runtimeError: string,
+  priorState: RepairState,
 ): Promise<ArtifactResult> {
+  const failureState = recordFailure(priorState, "runtime", runtimeError);
+  if (priorState.attempts.runtime === 1) {
+    return { ok: false, error: "The visualization could not start after its runtime repair.", repairState: failureState };
+  }
   return runArtifactTask(async () => {
-    const repaired = await repairOnce(brief, invalidHtml, [runtimeError]);
-    const validation = validateArtifact(repaired, brief.render, brief.parameters.length);
+    const runtimeRepairState: RepairState = {
+      attempts: { validation: priorState.attempts.validation, runtime: 1 },
+      lastFailure: failureState.lastFailure,
+    };
+    const repaired = await repairOnce(brief, invalidHtml, "runtime", [runtimeError]);
+    const validation = validateForDelivery(repaired, brief.render, brief.parameters.length);
     return validation.ok
-      ? successfulArtifact(repaired, brief.render, true)
-      : { ok: false, error: `The visualization failed after one repair: ${validation.errors.join(" ")}`, repairUsed: true };
+      ? successfulArtifact(repaired, brief.render, runtimeRepairState)
+      : {
+          ok: false,
+          error: `The visualization failed after its runtime repair: ${validation.errors.join(" ")}`,
+          repairState: recordFailure(runtimeRepairState, "validation", validation.errors.join(" ")),
+        };
   });
 }

@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArtifactFrame } from "@/components/artifact-frame";
-import type { ArtifactResult, IngestedDocument, VisualizationBrief } from "@/lib/types";
+import type { ArtifactResult, IngestedDocument, RepairState, VisualizationBrief } from "@/lib/types";
 
 type ArtifactState =
   | { status: "empty" }
   | { status: "loading"; brief: VisualizationBrief; message: string }
-  | { status: "ready"; brief: VisualizationBrief; html: string; repairUsed: boolean }
-  | { status: "error"; brief?: VisualizationBrief; message: string };
+  | { status: "ready"; brief: VisualizationBrief; html: string; repairState: RepairState }
+  | { status: "error"; brief?: VisualizationBrief; message: string; repairState?: RepairState };
 
 export function ReaderShell({ document }: { document: IngestedDocument }) {
   const [briefs, setBriefs] = useState<VisualizationBrief[]>([]);
@@ -42,7 +42,7 @@ export function ReaderShell({ document }: { document: IngestedDocument }) {
     return () => controller.abort();
   }, [document.sections]);
 
-  const requestArtifact = useCallback(async (brief: VisualizationBrief, previousHtml?: string, runtimeError?: string) => {
+  const requestArtifact = useCallback(async (brief: VisualizationBrief, previousHtml?: string, runtimeError?: string, repairState?: RepairState) => {
     generationController.current?.abort();
     const controller = new AbortController();
     generationController.current = controller;
@@ -57,13 +57,16 @@ export function ReaderShell({ document }: { document: IngestedDocument }) {
       const response = await fetch("/api/generate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ brief, previousHtml, runtimeError }),
+        body: JSON.stringify({ brief, previousHtml, runtimeError, repairState }),
         signal: controller.signal,
       });
       const result = (await response.json()) as ArtifactResult;
       if (requestId !== generationId.current) return;
-      if (!result.ok) throw new Error(result.error);
-      setArtifact({ status: "ready", brief, html: result.html, repairUsed: result.repairUsed });
+      if (!result.ok) {
+        setArtifact({ status: "error", brief, message: result.error, repairState: result.repairState });
+        return;
+      }
+      setArtifact({ status: "ready", brief, html: result.html, repairState: result.repairState });
     } catch (error) {
       if (controller.signal.aborted || requestId !== generationId.current) return;
       setArtifact({ status: "error", brief, message: error instanceof Error ? error.message : "The visualization could not be generated." });
@@ -74,11 +77,16 @@ export function ReaderShell({ document }: { document: IngestedDocument }) {
 
   const handleRuntimeFailure = useCallback((message: string) => {
     if (artifact.status !== "ready") return;
-    if (artifact.repairUsed) {
-      setArtifact({ status: "error", brief: artifact.brief, message: "The visualization could not start after one repair." });
+    if (artifact.repairState.attempts.runtime === 1) {
+      setArtifact({
+        status: "error",
+        brief: artifact.brief,
+        message: "The visualization could not start after its runtime repair.",
+        repairState: { ...artifact.repairState, lastFailure: { stage: "runtime", message } },
+      });
       return;
     }
-    void requestArtifact(artifact.brief, artifact.html, message);
+    void requestArtifact(artifact.brief, artifact.html, message, artifact.repairState);
   }, [artifact, requestArtifact]);
 
   return (

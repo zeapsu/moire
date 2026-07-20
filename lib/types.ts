@@ -63,6 +63,33 @@ export type ArtifactValidation = {
   bytes: number;
 };
 
+export const repairStageSchema = z.enum(["validation", "runtime"]);
+
+export const repairStateSchema = z
+  .object({
+    attempts: z
+      .object({
+        validation: z.union([z.literal(0), z.literal(1)]),
+        runtime: z.union([z.literal(0), z.literal(1)]),
+      })
+      .strict(),
+    lastFailure: z
+      .object({
+        stage: repairStageSchema,
+        message: z.string().min(1).max(2000),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export type RepairStage = z.infer<typeof repairStageSchema>;
+export type RepairState = z.infer<typeof repairStateSchema>;
+
+export function emptyRepairState(): RepairState {
+  return { attempts: { validation: 0, runtime: 0 }, lastFailure: null };
+}
+
 export type ArtifactResult =
-  | { ok: true; html: string; repairUsed: boolean }
-  | { ok: false; error: string; repairUsed: boolean };
+  | { ok: true; html: string; repairState: RepairState }
+  | { ok: false; error: string; repairState: RepairState };
