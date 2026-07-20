@@ -99,11 +99,13 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   if (document.querySelector("iframe,object,embed,link,form,base,meta[http-equiv='refresh']")) {
     errors.push("Artifact contains a prohibited embedded or navigational element.");
   }
-  const scriptText = [...document.querySelectorAll("script")].map((script) => script.textContent ?? "").join("\n");
-  const eventHandlerText = [...document.querySelectorAll("*")]
-    .flatMap((element) => [...element.attributes].filter((attribute) => /^on/i.test(attribute.name)).map((attribute) => attribute.value))
-    .join("\n");
-  const executableText = `${scriptText}\n${eventHandlerText}`;
+  const scriptUnits = [...document.querySelectorAll("script")].map((script) => script.textContent ?? "");
+  const eventHandlerUnits = [...document.querySelectorAll("*")].flatMap((element) =>
+    [...element.attributes].filter((attribute) => /^on/i.test(attribute.name)).map((attribute) => attribute.value),
+  );
+  const executableUnits = [...scriptUnits, ...eventHandlerUnits];
+  const scriptText = scriptUnits.join("\n");
+  const executableText = executableUnits.join("\n");
   const hasReadyPayload = /(?:["']ready["']|\bready)\s*:\s*true\b/i.test(scriptText);
   if (!/\bpostMessage\s*\(/i.test(scriptText) || !hasReadyPayload) {
     errors.push("Artifact must postMessage({ready:true}) after initialization.");
@@ -131,15 +133,22 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   if ([...propertyAssignments, ...attributeAssignments].some((expression) => !isSafeAssignedUrl(expression))) {
     errors.push("Artifact JavaScript may not assign network-capable element URLs.");
   }
-  const explicitNavigation =
-    /\b(?:window|globalThis|self|top|parent|document)\.location(?:\.href)?\s*=|\b(?:window|globalThis|self|top|parent|document)\.location\.(?:assign|replace)\s*\(|\b(?:window|globalThis|self|top|parent)\.open\s*\(/i.test(
-      executableText,
-    );
-  const declaresLocalLocation =
-    /\b(?:let|const|var|class|function)\s+location\b|(?:\(|,)\s*location\s*(?:[,)=])/i.test(executableText);
-  const bareLocationNavigation =
-    /(?<![.\w$])location(?:\.href)?\s*=|(?<![.\w$])location\.(?:assign|replace)\s*\(/i.test(executableText);
-  if (explicitNavigation || (bareLocationNavigation && !declaresLocalLocation)) {
+  const attemptsNavigation = (unit: string): boolean => {
+    const explicitNavigation =
+      /\b(?:window|globalThis|self|top|parent|document)\.location(?:\.href)?\s*=|\b(?:window|globalThis|self|top|parent|document)\.location\.(?:assign|replace)\s*\(|\b(?:window|globalThis|self|top|parent)\.open\s*\(/i.test(
+        unit,
+      );
+    const declaresLocalLocation =
+      /\b(?:let|const|var|class|function)\s+location\b/i.test(unit) ||
+      /\bfunction(?:\s+[\w$]+)?\s*\([^)]*\blocation\b[^)]*\)/i.test(unit) ||
+      /\([^)]*\blocation\b[^)]*\)\s*=>/i.test(unit) ||
+      /(?<![.\w$])location\s*=>/i.test(unit);
+    const bareLocationNavigation =
+      /(?<![.\w$])location(?:\.href)?\s*=|(?<![.\w$])location\.(?:assign|replace)\s*\(/i.test(unit);
+
+    return explicitNavigation || (bareLocationNavigation && !declaresLocalLocation);
+  };
+  if (executableUnits.some(attemptsNavigation)) {
     errors.push("Artifact attempts navigation.");
   }
   const literalUrls = [...executableText.matchAll(/["'`]((?:https?:)?\/\/[^\s"'`<>\\)]+)["'`]/gi)].map((match) =>

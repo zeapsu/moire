@@ -19,6 +19,13 @@ export class IngestError extends Error {
   }
 }
 
+function errorDiagnostic(error: unknown): { name: string; message: string } {
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message.slice(0, 500) };
+  }
+  return { name: "UnknownError", message: String(error).slice(0, 500) };
+}
+
 function safeAbsoluteUrl(value: string, baseUrl: string): string | null {
   if (!value || value.startsWith("#")) return value;
   try {
@@ -135,7 +142,11 @@ async function ingestArxiv(targetUrl: string, arxivId: string): Promise<Ingested
       html: indexed.html,
       sections: indexed.sections,
     };
-  } catch {
+  } catch (error) {
+    console.error("arXiv ingest failed", {
+      arxivId,
+      error: errorDiagnostic(error),
+    });
     throw new IngestError(ARXIV_ERROR);
   }
 }
@@ -157,7 +168,11 @@ async function ingestReadablePage(targetUrl: string): Promise<IngestedDocument> 
       html: indexed.html,
       sections: indexed.sections,
     };
-  } catch {
+  } catch (error) {
+    console.error("Readable page ingest failed", {
+      origin: new URL(targetUrl).origin,
+      error: errorDiagnostic(error),
+    });
     throw new IngestError(READABILITY_ERROR);
   }
 }

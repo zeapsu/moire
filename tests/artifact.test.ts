@@ -25,8 +25,20 @@ describe("artifact validation", () => {
   it("scans inline event-handler code for prohibited network and navigation behavior", () => {
     const fetchHandler = valid2d.replace("<canvas></canvas>", `<button onclick="fetch('https://evil.example')">Run</button><canvas></canvas>`);
     const navigationHandler = valid2d.replace("<canvas></canvas>", `<button onclick="window.location='https://evil.example'">Run</button><canvas></canvas>`);
+    const declarationBypass = valid2d.replace(
+      "<canvas></canvas>",
+      `<button onclick="render(location); location='/elsewhere'">Run</button><canvas></canvas>`,
+    );
     expect(validateArtifact(fetchHandler, "2d").errors.join(" ")).toContain("network");
     expect(validateArtifact(navigationHandler, "2d").errors.join(" ")).toContain("navigation");
+    expect(validateArtifact(declarationBypass, "2d").errors.join(" ")).toContain("navigation");
+  });
+
+  it("does not let a local declaration in one executable unit mask navigation in another", () => {
+    const html = valid2d
+      .replace("document.getElementById", "let location = { x: 0 }; document.getElementById")
+      .replace("<canvas></canvas>", `<button onclick="location='/elsewhere'">Run</button><canvas></canvas>`);
+    expect(validateArtifact(html, "2d").errors.join(" ")).toContain("navigation");
   });
 
   it("rejects relative and protocol-relative network surfaces", () => {
