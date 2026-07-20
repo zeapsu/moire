@@ -7,6 +7,8 @@ const MAX_ARTIFACT_BYTES = 200 * 1024;
 const MAX_CONCURRENCY = 2;
 const MAX_QUEUE_DEPTH = 20;
 
+export class ArtifactQueueFullError extends Error {}
+
 type QueueItem<T> = {
   task: () => Promise<T>;
   resolve: (value: T) => void;
@@ -32,7 +34,9 @@ function drainQueue(): void {
 }
 
 export function runArtifactTask<T>(task: () => Promise<T>): Promise<T> {
-  if (queue.length >= MAX_QUEUE_DEPTH) return Promise.reject(new Error("The visualization queue is full. Try again shortly."));
+  if (queue.length >= MAX_QUEUE_DEPTH) {
+    return Promise.reject(new ArtifactQueueFullError("The visualization queue is full. Try again shortly."));
+  }
   return new Promise<T>((resolve, reject) => {
     queue.push({ task, resolve: resolve as (value: unknown) => void, reject });
     drainQueue();
@@ -95,14 +99,15 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   if (document.querySelector("iframe,object,embed,link,form,base,meta[http-equiv='refresh']")) {
     errors.push("Artifact contains a prohibited embedded or navigational element.");
   }
-  if (!/postMessage\s*\(\s*\{\s*ready\s*:\s*true/i.test(html)) {
+  const scriptText = [...document.querySelectorAll("script")].map((script) => script.textContent ?? "").join("\n");
+  const hasReadyPayload = /(?:["']ready["']|\bready)\s*:\s*true\b/i.test(scriptText);
+  if (!/\bpostMessage\s*\(/i.test(scriptText) || !hasReadyPayload) {
     errors.push("Artifact must postMessage({ready:true}) after initialization.");
   }
   if (!/what\s+you(?:'|’|&#39;)re\s+seeing/i.test(document.body.textContent ?? "")) {
     errors.push("Artifact must include a What you're seeing caption.");
   }
   const sliderIds = sliders.map((slider) => slider.id).filter(Boolean);
-  const scriptText = [...document.querySelectorAll("script")].map((script) => script.textContent ?? "").join("\n");
   if (sliderIds.length !== sliders.length || new Set(sliderIds).size !== sliderIds.length) {
     errors.push("Every parameter slider must have a unique id.");
   } else if (sliderIds.some((id) => !scriptText.includes(id))) {
@@ -113,14 +118,29 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   }
 
   const prohibitedNetworkApis = /\b(?:fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|Worker|SharedWorker|import)\s*\(/i;
-  if (prohibitedNetworkApis.test(html)) errors.push("Artifact uses a prohibited network API.");
-  if (/\.(?:src|href)\s*=|setAttribute\s*\(\s*["'](?:src|href)["']/i.test(html)) {
+  if (prohibitedNetworkApis.test(scriptText)) errors.push("Artifact uses a prohibited network API.");
+  const isSafeAssignedUrl = (expression: string) => /^["'`](?:data:|blob:|#)/i.test(expression.trim());
+  const propertyAssignments = [...scriptText.matchAll(/\.(?:src|href)\s*=\s*([^;\n]+)/gi)].map((match) => match[1]);
+  const attributeAssignments = [
+    ...scriptText.matchAll(/setAttribute\s*\(\s*["'](?:src|href)["']\s*,\s*([^,)]+)/gi),
+  ].map((match) => match[1]);
+  if ([...propertyAssignments, ...attributeAssignments].some((expression) => !isSafeAssignedUrl(expression))) {
     errors.push("Artifact JavaScript may not assign network-capable element URLs.");
   }
-  if (/\b(?:window\.)?location(?:\.href)?\s*=|\blocation\.(?:assign|replace)\s*\(|\bwindow\.open\s*\(/i.test(html)) {
+  const explicitNavigation =
+    /\b(?:window|globalThis|self|top|parent|document)\.location(?:\.href)?\s*=|\b(?:window|globalThis|self|top|parent|document)\.location\.(?:assign|replace)\s*\(|\b(?:window|globalThis|self|top|parent)\.open\s*\(/i.test(
+      scriptText,
+    );
+  const declaresLocalLocation =
+    /\b(?:let|const|var|class|function)\s+location\b|(?:\(|,)\s*location\s*(?:[,)=])/i.test(scriptText);
+  const bareLocationNavigation =
+    /(?<![.\w$])location(?:\.href)?\s*=|(?<![.\w$])location\.(?:assign|replace)\s*\(/i.test(scriptText);
+  if (explicitNavigation || (bareLocationNavigation && !declaresLocalLocation)) {
     errors.push("Artifact attempts navigation.");
   }
-  const literalUrls = [...html.matchAll(/(?:https?:)?\/\/[^\s"'<>\\)]+/gi)].map((match) => match[0].replace(/[;,]+$/, ""));
+  const literalUrls = [...scriptText.matchAll(/["'`]((?:https?:)?\/\/[^\s"'`<>\\)]+)["'`]/gi)].map((match) =>
+    match[1].replace(/[;,]+$/, ""),
+  );
   if (literalUrls.some((url) => url !== THREE_JS_URL)) errors.push("Artifact contains a non-allowlisted URL literal.");
   validateNetworkSurfaces(document, render, errors);
   if (render === "2d" && document.querySelector('script[type="importmap"]')) {

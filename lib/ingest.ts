@@ -11,7 +11,7 @@ const BLOCK_SELECTOR = "article,section,div,p,h1,h2,h3,h4,h5,h6,figure,figcaptio
 const CANDIDATE_SELECTOR =
   "h1,h2,h3,h4,p,figure,figcaption,blockquote,pre,li,table,[class*='equation'],[class*='formula']";
 const REMOVE_SELECTOR =
-  "script,iframe,object,embed,link,style,meta,base,form,input,button,textarea,select,option,video,audio,source,track,foreignObject,animate,set";
+  "script,noscript,iframe,object,embed,link,style,meta,base,form,input,button,textarea,select,option,video,audio,source,track,foreignObject,animate,set";
 
 export class IngestError extends Error {
   constructor(public readonly userMessage: string) {
@@ -74,10 +74,22 @@ export function sanitizeAndIndex(html: string, baseUrl: string): { html: string;
   });
 
   let index = 0;
+  const sourceIds = new Map<string, string>();
   document.querySelectorAll(BLOCK_SELECTOR).forEach((element) => {
     index += 1;
-    if (element.id) element.setAttribute("data-source-id", element.id);
-    element.id = `p-${index}`;
+    const stableId = `p-${index}`;
+    if (element.id) {
+      element.setAttribute("data-source-id", element.id);
+      if (!sourceIds.has(element.id)) sourceIds.set(element.id, stableId);
+    }
+    element.id = stableId;
+  });
+  document.querySelectorAll<HTMLAnchorElement>("a[href^='#']").forEach((anchor) => {
+    const fragment = anchor.getAttribute("href")?.slice(1) ?? "";
+    const stableId = sourceIds.get(fragment);
+    if (stableId) anchor.setAttribute("href", `#${stableId}`);
+    anchor.removeAttribute("target");
+    anchor.removeAttribute("rel");
   });
 
   const seen = new Set<string>();
@@ -85,7 +97,10 @@ export function sanitizeAndIndex(html: string, baseUrl: string): { html: string;
   document.querySelectorAll(CANDIDATE_SELECTOR).forEach((candidate) => {
     const anchor = candidate.id ? candidate : candidate.closest(BLOCK_SELECTOR);
     if (!anchor?.id.match(/^p-\d+$/) || seen.has(anchor.id)) return;
-    const text = (candidate.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 1800);
+    const visibleText = (candidate.textContent ?? "").replace(/\s+/g, " ").trim();
+    const imageText = candidate.querySelector("img")?.getAttribute("alt")?.replace(/\s+/g, " ").trim() ?? "";
+    const text = (visibleText || imageText).slice(0, 1800);
+    if (!text) return;
     if (text.length < 40 && !candidate.matches("figure,[class*='equation'],[class*='formula']")) return;
     seen.add(anchor.id);
     sections.push({
@@ -105,7 +120,10 @@ export function sanitizeAndIndex(html: string, baseUrl: string): { html: string;
 async function ingestArxiv(targetUrl: string, arxivId: string): Promise<IngestedDocument> {
   try {
     const sourceUrl = `https://ar5iv.labs.arxiv.org/html/${arxivId}`;
-    const { html } = await safeFetchHtml(sourceUrl);
+    const { html, finalUrl } = await safeFetchHtml(sourceUrl);
+    if (new URL(finalUrl).hostname.toLowerCase() !== "ar5iv.labs.arxiv.org") {
+      throw new Error("ar5iv did not provide an HTML rendering");
+    }
     const sourceDom = new JSDOM(html, { url: sourceUrl });
     const article = sourceDom.window.document.querySelector("article") ?? sourceDom.window.document.body;
     const indexed = sanitizeAndIndex(article.innerHTML, sourceUrl);

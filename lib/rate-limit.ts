@@ -3,7 +3,12 @@ type WindowEntry = { count: number; resetsAt: number };
 const windows = new Map<string, WindowEntry>();
 
 export function clientAddress(request: Request): string {
-  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "local";
+  const forwarded = request.headers
+    .get("x-forwarded-for")
+    ?.split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+  return forwarded?.at(-1) || request.headers.get("x-real-ip")?.trim() || "local";
 }
 
 export function takeRateLimit(key: string, limit: number, windowMs: number): { allowed: boolean; retryAfter: number } {

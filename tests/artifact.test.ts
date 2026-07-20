@@ -40,4 +40,38 @@ describe("artifact validation", () => {
     expect(secured).toContain("default-src 'none'");
     expect(secured).toContain("connect-src 'none'");
   });
+
+  it("does not mistake JavaScript comments, prose, or local location variables for network access", () => {
+    const html = valid2d
+      .replace("speed changes the motion.", "the simulation does not fetch (or import) any external data.")
+      .replace("document.getElementById", "//---- setup ----\nlet location = { x: 0, y: 0 };\ndocument.getElementById");
+    expect(validateArtifact(html, "2d")).toMatchObject({ ok: true, errors: [] });
+    expect(validateArtifact(valid2d.replace("document.getElementById", "particle.location = { x: 1 }; document.getElementById"), "2d").ok).toBe(true);
+    expect(validateArtifact(valid2d.replace("document.getElementById", "location.href = 'https://example.com'; document.getElementById"), "2d").ok).toBe(false);
+  });
+
+  it("allows self-contained data URI assignments but still rejects network assignments", () => {
+    const dataArtifact = valid2d.replace(
+      "document.getElementById",
+      "const img = new Image(); img.src = 'data:image/png;base64,iVBORw0KGgo='; document.getElementById",
+    );
+    const networkArtifact = valid2d.replace(
+      "document.getElementById",
+      "const img = new Image(); img.src = 'https://tracker.example/pixel'; document.getElementById",
+    );
+    expect(validateArtifact(dataArtifact, "2d").ok).toBe(true);
+    expect(validateArtifact(networkArtifact, "2d").ok).toBe(false);
+  });
+
+  it("accepts equivalent quoted, reordered, and variable ready payloads", () => {
+    const quoted = valid2d.replace("{ready:true}", '{"ready": true}');
+    const reordered = valid2d.replace("{ready:true}", "{status: 'ok', ready: true}");
+    const variable = valid2d.replace(
+      "window.parent.postMessage({ready:true}, '*')",
+      "const message = {ready:true}; window.parent.postMessage(message, '*')",
+    );
+    expect(validateArtifact(quoted, "2d").ok).toBe(true);
+    expect(validateArtifact(reordered, "2d").ok).toBe(true);
+    expect(validateArtifact(variable, "2d").ok).toBe(true);
+  });
 });

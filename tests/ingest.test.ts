@@ -30,4 +30,31 @@ describe("document sanitization and indexing", () => {
     expect(result.html).toContain("<math>");
     expect(result.sections.some((section) => section.elementType === "equation")).toBe(true);
   });
+
+  it("removes noscript reparsing payloads before browser insertion", () => {
+    const result = sanitizeAndIndex(
+      `<article><h1>Unsafe source</h1><noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript><p>This safe explanatory paragraph is long enough to become a visualization candidate.</p></article>`,
+      "https://example.com/paper",
+    );
+    expect(result.html).not.toContain("<noscript");
+    expect(result.html).not.toContain("onerror");
+  });
+
+  it("rewrites source fragment links to stable ids without opening a new tab", () => {
+    const result = sanitizeAndIndex(
+      `<article><h1 id="intro">Introduction</h1><p><a href="#intro">Return to introduction</a> with enough surrounding explanation to be useful.</p></article>`,
+      "https://example.com/paper",
+    );
+    expect(result.html).toContain('href="#p-2"');
+    expect(result.html).not.toContain('target="_blank"');
+  });
+
+  it("omits caption-less figures instead of producing an invalid empty scan section", () => {
+    const result = sanitizeAndIndex(
+      `<article><h1>Figures</h1><figure><img src="/plot.png"></figure><p>This valid paragraph remains available to the scanner after the empty figure.</p></article>`,
+      "https://example.com/paper",
+    );
+    expect(result.sections.every((section) => section.text.length > 0)).toBe(true);
+    expect(result.sections.some((section) => section.text.includes("valid paragraph"))).toBe(true);
+  });
 });

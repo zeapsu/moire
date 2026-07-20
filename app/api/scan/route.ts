@@ -15,7 +15,9 @@ const sectionSchema = z
   })
   .strict();
 
-const requestSchema = z.object({ sections: z.array(sectionSchema).min(1).max(180) }).strict();
+export const scanRequestSchema = z
+  .object({ sections: z.array(sectionSchema).min(1).transform((sections) => sections.slice(0, 180)) })
+  .strict();
 
 export async function POST(request: Request) {
   try {
@@ -23,7 +25,7 @@ export async function POST(request: Request) {
     if (!rate.allowed) {
       return NextResponse.json({ error: "Too many scans. Try again shortly." }, { status: 429, headers: { "retry-after": String(rate.retryAfter) } });
     }
-    const parsed = requestSchema.safeParse(await request.json());
+    const parsed = scanRequestSchema.safeParse(await request.json());
     if (!parsed.success) return NextResponse.json({ error: "The page could not be prepared for scanning." }, { status: 400 });
     const briefs = await scanDocument(parsed.data.sections as Parameters<typeof scanDocument>[0]);
     return NextResponse.json({ briefs });

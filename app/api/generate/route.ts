@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { generateArtifact, repairRuntimeFailure } from "@/lib/artifact";
+import { ArtifactQueueFullError, generateArtifact, repairRuntimeFailure } from "@/lib/artifact";
 import { briefSchema } from "@/lib/types";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
 
@@ -39,6 +39,12 @@ export async function POST(request: Request) {
     return NextResponse.json(result, { status: result.ok ? 200 : 422 });
   } catch (error) {
     console.error("Artifact generation failed", error);
+    if (error instanceof ArtifactQueueFullError) {
+      return NextResponse.json(
+        { ok: false, error: error.message, repairUsed: false },
+        { status: 503, headers: { "retry-after": "15" } },
+      );
+    }
     return NextResponse.json(
       { ok: false, error: error instanceof Error && error.message.includes("OPENAI_API_KEY") ? "Moiré is missing its OpenAI API key." : "The visualization could not be generated.", repairUsed: false },
       { status: 500 },
