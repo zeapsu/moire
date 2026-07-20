@@ -95,10 +95,12 @@ export type ArtifactResult =
   | { ok: false; error: string; repairState: RepairState };
 
 export type ArtifactStatus = "idle" | "generating" | "ready" | "repairing" | "error";
+export type ArtifactKind = "page" | "selection";
 
 export type ArtifactDescriptor = {
   artifactId: string;
   status: ArtifactStatus;
+  kind: ArtifactKind;
   brief: VisualizationBrief;
 };
 

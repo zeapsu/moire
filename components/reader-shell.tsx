@@ -3,7 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArtifactOverlay, type ArtifactView } from "@/components/artifact-overlay";
 import { NotebookRail } from "@/components/notebook-rail";
-import { addNotebookEntry, notebookStorageKey, parseNotebook, type NotebookEntry } from "@/lib/notebook";
+import {
+  addNotebookEntry,
+  notebookStorageKey,
+  parseNotebook,
+  resolveNotebookArtifact,
+  type NotebookEntry,
+} from "@/lib/notebook";
 import type {
   ArtifactDescriptor,
   ArtifactStatus,
@@ -64,6 +70,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
     setNotebook((current) =>
       addNotebookEntry(current, {
         artifactId: descriptor.artifactId,
+        kind: descriptor.kind,
         brief: descriptor.brief,
         savedAt: Date.now(),
       }),
@@ -348,7 +355,6 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
         if (!response.ok || !data.artifacts) throw new Error(data.error || "The selected passage could not be scanned.");
         const descriptor = data.artifacts[0];
         if (!descriptor) throw new Error("This selection did not yield a useful interactive view.");
-        setArtifacts((current) => [...current.filter((artifact) => artifact.artifactId !== descriptor.artifactId), descriptor]);
         openArtifact(descriptor, true);
       } catch (error) {
         setView({
@@ -377,12 +383,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
 
   const openNotebookEntry = useCallback(
     (entry: NotebookEntry) => {
-      const current =
-        artifacts.find((artifact) => artifact.artifactId === entry.artifactId) ??
-        artifacts.find((artifact) => artifact.brief.anchor.dom_selector === entry.brief.anchor.dom_selector);
-      openArtifact(
-        current ?? { artifactId: entry.artifactId, brief: entry.brief, status: "idle" },
-      );
+      openArtifact(resolveNotebookArtifact(entry, artifacts));
     },
     [artifacts, openArtifact],
   );

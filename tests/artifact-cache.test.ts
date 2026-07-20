@@ -177,7 +177,10 @@ describe("server-owned artifact cache", () => {
     await expect(firstRepair).resolves.toMatchObject({
       ok: true,
       cached: false,
-      repairState: { attempts: { validation: 0, runtime: 1 } },
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "replayed failure" },
+      },
     });
     await expect(repairCachedArtifact(artifactId, "failed after repair")).resolves.toMatchObject({
       ok: false,

@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { addNotebookEntry, notebookStorageKey, parseNotebook, type NotebookEntry } from "@/lib/notebook";
+import {
+  addNotebookEntry,
+  notebookStorageKey,
+  parseNotebook,
+  resolveNotebookArtifact,
+  type NotebookEntry,
+} from "@/lib/notebook";
 
 const entry: NotebookEntry = {
   artifactId: "9ba8fd67-b0bb-445d-8a8e-803f2fb38079",
+  kind: "page",
   savedAt: 123,
   brief: {
     span_id: "s-1",
@@ -33,5 +40,31 @@ describe("notebook persistence", () => {
     expect(updated).toHaveLength(1);
     expect(updated[0].savedAt).toBe(456);
     expect(parseNotebook(JSON.stringify(updated))).toEqual(updated);
+  });
+
+  it("restores legacy entries as page artifacts", () => {
+    const { kind: _kind, ...legacyEntry } = entry;
+    expect(parseNotebook(JSON.stringify([legacyEntry]))[0].kind).toBe("page");
+  });
+
+  it("never falls back from a selected range to the page artifact on the same anchor", () => {
+    const pageArtifact = {
+      artifactId: "b3e7176c-d1cd-412f-9204-5e419ab3b24a",
+      kind: "page" as const,
+      status: "ready" as const,
+      brief: entry.brief,
+    };
+    const selectionEntry: NotebookEntry = {
+      ...entry,
+      artifactId: "ce5ee601-ff55-4fb6-a15e-7a8e77a47c88",
+      kind: "selection",
+    };
+
+    expect(resolveNotebookArtifact(selectionEntry, [pageArtifact])).toMatchObject({
+      artifactId: selectionEntry.artifactId,
+      kind: "selection",
+      status: "idle",
+    });
+    expect(resolveNotebookArtifact(entry, [pageArtifact])).toBe(pageArtifact);
   });
 });

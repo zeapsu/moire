@@ -59,7 +59,10 @@ export async function POST(request: Request) {
           .digest("hex")
           .slice(0, 24)
       : undefined;
-    const artifacts = registerArtifactBriefs(targetUrl, briefs, { variantKey });
+    const artifacts = registerArtifactBriefs(targetUrl, briefs, {
+      variantKey,
+      kind: parsed.data.selection ? "selection" : "page",
+    });
     return NextResponse.json({ artifacts });
   } catch (error) {
     console.error("Brief scan failed", error);

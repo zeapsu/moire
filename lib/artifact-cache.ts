@@ -9,6 +9,7 @@ import { normalizeTarget } from "@/lib/target";
 import {
   emptyRepairState,
   type ArtifactDescriptor,
+  type ArtifactKind,
   type ArtifactResult,
   type ArtifactStatus,
   type CachedArtifactResult,
@@ -24,6 +25,7 @@ type ArtifactRecord = {
   cacheKey: string;
   targetUrl: string;
   brief: VisualizationBrief;
+  kind: ArtifactKind;
   status: ArtifactStatus;
   repairState: RepairState;
   result?: ArtifactResult;
@@ -79,7 +81,7 @@ function sweepCache(now = Date.now(), reserve = 0): void {
 }
 
 function descriptor(record: ArtifactRecord): ArtifactDescriptor {
-  return { artifactId: record.artifactId, status: record.status, brief: record.brief };
+  return { artifactId: record.artifactId, status: record.status, kind: record.kind, brief: record.brief };
 }
 
 function requireRecord(artifactId: string): ArtifactRecord {
@@ -111,7 +113,7 @@ function envelope(record: ArtifactRecord, result: ArtifactResult, cached: boolea
 export function registerArtifactBriefs(
   targetUrl: string,
   briefs: VisualizationBrief[],
-  options: { variantKey?: string } = {},
+  options: { variantKey?: string; kind?: ArtifactKind } = {},
 ): ArtifactDescriptor[] {
   sweepCache();
   const normalizedTarget = normalizeTarget(targetUrl);
@@ -136,6 +138,7 @@ export function registerArtifactBriefs(
       cacheKey: key,
       targetUrl: normalizedTarget,
       brief,
+      kind: options.kind ?? "page",
       status: "idle",
       repairState: emptyRepairState(),
       lastAccessedAt: Date.now(),
@@ -237,7 +240,7 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
     .then((result) => {
       const authoritativeState: RepairState = {
         attempts: { validation: result.repairState.attempts.validation, runtime: 1 },
-        lastFailure: result.repairState.lastFailure,
+        lastFailure: result.ok ? record.repairState.lastFailure : result.repairState.lastFailure,
       };
       const authoritativeResult = withServerRepairState(result, authoritativeState);
       record.repairState = authoritativeState;

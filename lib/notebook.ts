@@ -1,11 +1,17 @@
 import { z } from "zod";
-import { briefSchema, type VisualizationBrief } from "@/lib/types";
+import {
+  briefSchema,
+  type ArtifactDescriptor,
+  type ArtifactKind,
+  type VisualizationBrief,
+} from "@/lib/types";
 
 const MAX_NOTEBOOK_ENTRIES = 24;
 
 const notebookEntrySchema = z
   .object({
     artifactId: z.string().uuid(),
+    kind: z.enum(["page", "selection"]).default("page"),
     brief: briefSchema,
     savedAt: z.number().int().nonnegative(),
   })
@@ -15,6 +21,7 @@ const notebookSchema = z.array(notebookEntrySchema).max(MAX_NOTEBOOK_ENTRIES);
 
 export type NotebookEntry = {
   artifactId: string;
+  kind: ArtifactKind;
   brief: VisualizationBrief;
   savedAt: number;
 };
@@ -38,4 +45,28 @@ export function addNotebookEntry(entries: NotebookEntry[], entry: NotebookEntry)
     0,
     MAX_NOTEBOOK_ENTRIES,
   );
+}
+
+export function resolveNotebookArtifact(
+  entry: NotebookEntry,
+  artifacts: ArtifactDescriptor[],
+): ArtifactDescriptor {
+  const exact = artifacts.find((artifact) => artifact.artifactId === entry.artifactId);
+  if (exact) return exact;
+
+  if (entry.kind === "page") {
+    const rescannedPage = artifacts.find(
+      (artifact) =>
+        artifact.kind === "page" &&
+        artifact.brief.anchor.dom_selector === entry.brief.anchor.dom_selector,
+    );
+    if (rescannedPage) return rescannedPage;
+  }
+
+  return {
+    artifactId: entry.artifactId,
+    kind: entry.kind,
+    brief: entry.brief,
+    status: "idle",
+  };
 }
