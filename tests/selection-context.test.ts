@@ -86,4 +86,23 @@ describe("selection context", () => {
     expect(result.context.sectionCount).toBeGreaterThan(1);
     expect(assessSelection(result.text, result.context)).toMatchObject({ status: "too_broad", reason: "section-limit" });
   });
+
+  it("clamps the client-computed document size to the scan schema maximum", () => {
+    const { document, article, sections } = fixture();
+    const range = document.createRange();
+    range.selectNode(document.querySelector("#p-2")!);
+    const oversizedSections = [
+      ...sections,
+      ...Array.from({ length: 2_779 }, (_, index) => ({
+        selector: `#p-${index + 100}` as `#p-${number}`,
+        section: "Large source",
+        elementType: "paragraph" as const,
+        text: "x".repeat(1_800),
+      })),
+    ];
+
+    const result = collectSelectionContext(range, article, oversizedSections, range.toString());
+
+    expect(result.context.documentCharacters).toBe(5_000_000);
+  });
 });

@@ -155,6 +155,30 @@ function descriptor(record: ArtifactRecord): ArtifactDescriptor {
   return { artifactId: record.artifactId, status: record.status, kind: record.kind, brief: record.brief };
 }
 
+function sameBriefSource(left: VisualizationBrief, right: VisualizationBrief): boolean {
+  return JSON.stringify({
+    anchor: left.anchor,
+    groundingTerms: left.grounding_terms,
+    references: left.references,
+  }) === JSON.stringify({
+    anchor: right.anchor,
+    groundingTerms: right.grounding_terms,
+    references: right.references,
+  });
+}
+
+function isActive(record: ArtifactRecord): boolean {
+  return record.status === "generating" || record.status === "repairing";
+}
+
+function invalidateRecord(record: ArtifactRecord, brief: VisualizationBrief): void {
+  record.brief = brief;
+  record.status = "idle";
+  record.repairState = emptyRepairState();
+  record.seedHash = undefined;
+  record.result = undefined;
+}
+
 function touchRecord(record: ArtifactRecord | undefined): ArtifactRecord {
   if (!record) throw new ArtifactNotFoundError("The visualization is no longer in this server's cache.");
   const now = Date.now();
@@ -195,9 +219,10 @@ const repairDurableArtifact = unstable_cache(
     artifactId: string,
     brief: VisualizationBrief,
     invalidHtml: string,
+    runtimeDiagnostic: string,
     priorState: RepairState,
   ): Promise<ArtifactResult> =>
-    repairRuntimeFailure(brief, invalidHtml, "The artifact did not complete browser startup.", priorState),
+    repairRuntimeFailure(brief, invalidHtml, runtimeDiagnostic, priorState),
   ["moire-artifact-runtime-repair-v1"],
   { revalidate: CACHE_TTL_SECONDS, tags: ["moire-artifacts"] },
 );
@@ -248,7 +273,7 @@ export function registerArtifactBriefs(
     const existing = existingId ? store.byId.get(existingId) : undefined;
     if (existing) {
       existing.lastAccessedAt = now;
-      if (existing.status === "idle") existing.brief = brief;
+      if (!isActive(existing) && !sameBriefSource(existing.brief, brief)) invalidateRecord(existing, brief);
       return descriptor(existing);
     }
 
@@ -274,9 +299,21 @@ export async function synchronizeArtifactBriefs(descriptors: ArtifactDescriptor[
     descriptors.map(async (candidate) => {
       const local = store.byId.get(candidate.artifactId);
       if (!local) return candidate;
+      if (isActive(local)) return descriptor(local);
       const restored = persistedRecord(await runtimeStore.get(candidate.artifactId));
       if (restored && Date.now() - restored.lastAccessedAt <= CACHE_TTL_MS) {
-        const record = installRecord({ ...restored, lastAccessedAt: Date.now() });
+        const matchesCurrentSource =
+          restored.cacheKey === local.cacheKey &&
+          restored.targetUrl === local.targetUrl &&
+          restored.kind === local.kind &&
+          sameBriefSource(restored.brief, local.brief);
+        if (!matchesCurrentSource) {
+          invalidateRecord(local, local.brief);
+          local.lastAccessedAt = Date.now();
+          await persistRecord(local);
+          return descriptor(local);
+        }
+        const record = installRecord({ ...restored, brief: local.brief, lastAccessedAt: Date.now() });
         await persistRecord(record);
         return descriptor(record);
       }
@@ -363,22 +400,13 @@ export async function generateCachedArtifact(
       return result;
     })
     .catch(async (error) => {
-      if (error instanceof ArtifactQueueFullError || error instanceof ModelGatewayConfigurationError) {
-        record.status = "idle";
-        await persistRecord(record);
-        throw error;
-      }
-      console.error("Artifact generation pipeline failed", { artifactId: record.artifactId, error });
-      const terminalResult: ArtifactResult = {
-        ok: false,
-        error: "The visualization generation failed before it produced an artifact.",
-        repairState: record.repairState,
-      };
-      record.result = terminalResult;
-      record.status = "error";
+      record.status = "idle";
+      record.result = undefined;
       record.lastAccessedAt = Date.now();
       await persistRecord(record);
-      return terminalResult;
+      if (error instanceof ArtifactQueueFullError || error instanceof ModelGatewayConfigurationError) throw error;
+      console.error("Artifact generation pipeline failed", { artifactId: record.artifactId, error });
+      throw error;
     })
     .finally(() => {
       record.generationPromise = undefined;
@@ -429,7 +457,7 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
 
   const repair =
     process.env.VERCEL === "1"
-      ? repairDurableArtifact(record.artifactId, record.brief, current.html, priorState)
+      ? repairDurableArtifact(record.artifactId, record.brief, current.html, diagnostic, priorState)
       : repairRuntimeFailure(record.brief, current.html, diagnostic, priorState);
   const work = repair
     .then(async (result) => {

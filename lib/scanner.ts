@@ -88,7 +88,6 @@ export function briefIsGroundedInSource(brief: VisualizationBrief, source: Pick<
 function groundedRankedBriefs(
   scanned: VisualizationBrief[],
   sections: ScanSection[],
-  groundingSource: Pick<ScanSection, "text">,
 ): VisualizationBrief[] {
   const validSelectors = new Set(sections.map((section) => section.selector));
   const sourceBySelector = new Map(sections.map((section) => [section.selector, section]));
@@ -96,7 +95,7 @@ function groundedRankedBriefs(
   for (const brief of scanned) {
     if (!validSelectors.has(brief.anchor.dom_selector as `#p-${number}`)) continue;
     const source = sourceBySelector.get(brief.anchor.dom_selector as `#p-${number}`);
-    if (!source || !briefIsGroundedInSource(brief, groundingSource)) continue;
+    if (!source || !briefIsGroundedInSource(brief, source)) continue;
     const existing = deduped.get(brief.anchor.dom_selector);
     if (!existing || brief.score > existing.score) deduped.set(brief.anchor.dom_selector, brief);
   }
@@ -119,7 +118,7 @@ export async function scanSelection(section: ScanSection): Promise<SelectionScan
     briefs: [],
   };
   if (parsed.assessment.status !== "sufficient") return { assessment: parsed.assessment, briefs: [] };
-  const briefs = groundedRankedBriefs(parsed.briefs, [section], section).slice(0, 1);
+  const briefs = groundedRankedBriefs(parsed.briefs, [section]).slice(0, 1);
   return briefs.length === 1
     ? { assessment: parsed.assessment, briefs }
     : {
@@ -133,7 +132,6 @@ export async function scanSelection(section: ScanSection): Promise<SelectionScan
 
 export async function scanDocument(sections: ScanSection[]): Promise<VisualizationBrief[]> {
   if (sections.length === 0) return [];
-  const pageSource = { text: sections.map((section) => section.text).join("\n") };
   const batches = chunkSections(sections);
   const scanned: VisualizationBrief[] = [];
 
@@ -141,5 +139,5 @@ export async function scanDocument(sections: ScanSection[]): Promise<Visualizati
     scanned.push(...(await scanChunk(batch)));
   }
 
-  return groundedRankedBriefs(scanned, sections, pageSource);
+  return groundedRankedBriefs(scanned, sections);
 }

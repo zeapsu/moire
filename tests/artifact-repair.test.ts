@@ -108,6 +108,22 @@ describe("stage-specific artifact repair policy", () => {
     expect(createResponse).toHaveBeenCalledTimes(3);
   });
 
+  it("recognizes a provider-normalized fallback model without a redundant third call", async () => {
+    const truncated = {
+      output_text: "<!doctype html><html>",
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+    };
+    createResponse
+      .mockResolvedValueOnce({ ...truncated, model: "x-ai/grok-4.5" })
+      .mockResolvedValueOnce({ ...truncated, model: "gpt-5.6-terra" });
+
+    const result = await generateArtifact(brief);
+
+    expect(result).toMatchObject({ ok: false, repairState: { modelCalls: 2 } });
+    expect(createResponse).toHaveBeenCalledTimes(2);
+  });
+
   it("uses the normal Sol repair when a completed 32k regeneration is structurally invalid", async () => {
     createResponse
       .mockResolvedValueOnce({

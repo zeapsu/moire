@@ -5,6 +5,7 @@ import {
   ARTIFACT_OUTPUT_LIMIT_RETRY_TOKENS,
   ARTIFACT_REASONING_EFFORT,
   getModelGateway,
+  modelMatchesRoute,
   MODEL_ROUTES,
 } from "@/lib/model-gateway";
 import {
@@ -445,7 +446,7 @@ export async function generateArtifact(
       state = afterModelCall(state);
       if (generated.outputLimited) {
         state = recordFailure(state, "generation", "The 32,000-token regeneration also reached its output limit.");
-        if (generated.model.includes("gpt-5.6-terra")) {
+        if (modelMatchesRoute(generated.model, MODEL_ROUTES.fallback)) {
           return {
             ok: false,
             error: "The visualization reached its output limit after the bounded regeneration.",

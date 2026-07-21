@@ -264,17 +264,92 @@ describe("server-owned artifact cache", () => {
     expect(generateArtifactMock).toHaveBeenCalledTimes(1);
   });
 
-  it("terminally caches a started generation pipeline that throws", async () => {
-    generateArtifactMock.mockRejectedValueOnce(new Error("upstream connection ended"));
-    const [{ artifactId }] = registerArtifactBriefs("https://example.com/paper", [brief]);
+  it("keeps a thrown generation failure retryable instead of durably caching it", async () => {
+    process.env.VERCEL = "1";
+    const transient = new Error("upstream connection ended");
+    generateArtifactMock.mockRejectedValueOnce(transient).mockResolvedValueOnce(validResult);
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await synchronizeArtifactBriefs(registered);
 
-    await expect(generateCachedArtifact(artifactId)).resolves.toMatchObject({
-      ok: false,
-      cached: false,
-      error: "The visualization generation failed before it produced an artifact.",
-    });
-    await expect(generateCachedArtifact(artifactId)).resolves.toMatchObject({ ok: false, cached: true });
+    await expect(generateCachedArtifact(registered[0].artifactId)).rejects.toBe(transient);
+    resetArtifactCacheForTests();
+    await expect(generateCachedArtifact(registered[0].artifactId)).resolves.toMatchObject({ ok: true, cached: false });
+    expect(generateArtifactMock).toHaveBeenCalledTimes(2);
+    errorLog.mockRestore();
+  });
+
+  it("does not orphan an in-memory generation when durable state is synchronized", async () => {
+    process.env.VERCEL = "1";
+    const generation = deferred<ArtifactResult>();
+    generateArtifactMock.mockReturnValueOnce(generation.promise);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await synchronizeArtifactBriefs(registered);
+    const first = generateCachedArtifact(registered[0].artifactId);
+    await vi.waitFor(() => expect(generateArtifactMock).toHaveBeenCalledTimes(1));
+
+    await synchronizeArtifactBriefs(registered);
+    const replay = generateCachedArtifact(registered[0].artifactId);
+    await Promise.resolve();
     expect(generateArtifactMock).toHaveBeenCalledTimes(1);
+    generation.resolve(validResult);
+    await expect(first).resolves.toMatchObject({ ok: true, cached: false });
+    await expect(replay).resolves.toMatchObject({ ok: true, cached: true });
+  });
+
+  it("keeps a fresh changed brief and invalidates a restored stale result", async () => {
+    process.env.VERCEL = "1";
+    generateArtifactMock.mockResolvedValue(validResult);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await synchronizeArtifactBriefs(registered);
+    await generateCachedArtifact(registered[0].artifactId);
+    resetArtifactCacheForTests();
+
+    const changedBrief = {
+      ...brief,
+      anchor: { ...brief.anchor, text_excerpt: "A newly rescanned source passage" },
+      grounding_terms: ["newly rescanned source passage"],
+      concept: "A newly rescanned source concept",
+    };
+    const fresh = registerArtifactBriefs("https://example.com/paper", [changedBrief]);
+    const [synchronized] = await synchronizeArtifactBriefs(fresh);
+    expect(synchronized).toMatchObject({ status: "idle", brief: changedBrief });
+    await expect(generateCachedArtifact(synchronized.artifactId)).resolves.toMatchObject({ ok: true, cached: false });
+    expect(generateArtifactMock).toHaveBeenLastCalledWith(changedBrief, "interactive", synchronized.artifactId);
+    expect(generateArtifactMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a cached artifact when only model-authored brief wording changes", async () => {
+    process.env.VERCEL = "1";
+    generateArtifactMock.mockResolvedValue(validResult);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await synchronizeArtifactBriefs(registered);
+    await generateCachedArtifact(registered[0].artifactId);
+    resetArtifactCacheForTests();
+
+    const rephrased = { ...brief, title: "Rephrased title", concept: "Equivalent model wording", score: 0.8 };
+    const fresh = registerArtifactBriefs("https://example.com/paper", [rephrased]);
+    const [synchronized] = await synchronizeArtifactBriefs(fresh);
+
+    await expect(generateCachedArtifact(synchronized.artifactId)).resolves.toMatchObject({ ok: true, cached: true });
+    expect(generateArtifactMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards the actual runtime diagnostic to durable repair", async () => {
+    process.env.VERCEL = "1";
+    generateArtifactMock.mockResolvedValueOnce(validResult);
+    repairRuntimeFailureMock.mockResolvedValueOnce(validResult);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await synchronizeArtifactBriefs(registered);
+    await generateCachedArtifact(registered[0].artifactId);
+
+    await repairCachedArtifact(registered[0].artifactId, "ResizeObserver loop limit exceeded");
+    expect(repairRuntimeFailureMock).toHaveBeenCalledWith(
+      brief,
+      validResult.html,
+      "ResizeObserver loop limit exceeded",
+      emptyRepairState(),
+    );
   });
 
   it("deduplicates concurrent runtime repair and preserves a working artifact after the budget is exhausted", async () => {

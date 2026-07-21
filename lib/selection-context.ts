@@ -6,6 +6,8 @@ type IndexedElement = {
   section: ScanSection;
 };
 
+const MAX_DOCUMENT_CHARACTERS = 5_000_000;
+
 function rangeIntersects(range: Range, element: Element): boolean {
   try {
     return range.intersectsNode(element);
@@ -65,7 +67,10 @@ export function collectSelectionContext(
       blockCount: Math.max(1, effective.length),
       sectionCount: Math.max(1, new Set(effective.map(({ section }) => section.section)).size),
       headingCount,
-      documentCharacters: Math.max(1, sections.reduce((sum, section) => sum + section.text.length, 0)),
+      documentCharacters: Math.min(
+        MAX_DOCUMENT_CHARACTERS,
+        Math.max(1, sections.reduce((sum, section) => sum + section.text.length, 0)),
+      ),
       elementTypes: elementTypes.length > 0 ? elementTypes : [isSingleFigure ? "figure" : "paragraph"],
     },
   };

@@ -8,7 +8,7 @@ vi.mock("@/lib/model-gateway", async (importOriginal) => ({
   getModelGateway: () => ({ responses: { parse: openAIMocks.parse } }),
 }));
 
-import { scanSelection } from "@/lib/scanner";
+import { scanDocument, scanSelection } from "@/lib/scanner";
 
 const section = {
   selector: "#p-7" as const,
@@ -81,5 +81,20 @@ describe("selection scanner", () => {
     expect(instructions).toContain("exactly one self-contained interactive visualization");
     expect(instructions).toContain("spatial depth");
     expect(instructions).toContain("never use 3D as decoration");
+  });
+
+  it("rejects a multi-section brief grounded only elsewhere in the document", async () => {
+    openAIMocks.parse.mockResolvedValue({
+      output_parsed: {
+        briefs: [{ ...groundedBrief, grounding_terms: ["quantum flux"] }],
+      },
+    });
+
+    const result = await scanDocument([
+      section,
+      { ...section, selector: "#p-8", text: "A separate section defines quantum flux." },
+    ]);
+
+    expect(result).toEqual([]);
   });
 });

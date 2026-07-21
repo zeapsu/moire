@@ -15,6 +15,11 @@ let client: OpenAI | undefined;
 
 export class ModelGatewayConfigurationError extends Error {}
 
+export function modelMatchesRoute(actualModel: string, configuredModel: string): boolean {
+  const normalized = (model: string) => model.trim().toLocaleLowerCase().split("/").at(-1);
+  return normalized(actualModel) === normalized(configuredModel);
+}
+
 export function getModelGateway(): OpenAI {
   if (!process.env.OPENROUTER_API_KEY) {
     throw new ModelGatewayConfigurationError("OPENROUTER_API_KEY is not configured.");
@@ -25,7 +30,7 @@ export function getModelGateway(): OpenAI {
     maxRetries: 0,
     defaultHeaders: {
       "HTTP-Referer": "https://moire-umber.vercel.app",
-      "X-OpenRouter-Title": "Moiré",
+      "X-Title": "Moiré",
       "X-OpenRouter-Metadata": "enabled",
     },
   });
