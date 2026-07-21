@@ -472,14 +472,16 @@ a { color: inherit; }
   .experiment-spine { padding: 14px 0; width: 8px; }
   .spine-label { display: none; }
   .spine-band { left: -4px; width: 9px; }
-  .spine-mark { height: 44px; left: -12px; margin-top: -22px; width: 32px; }
-  .spine-mark::before { height: 5px; width: 5px; }
+  .spine-mark { height: 44px; left: -3px; margin-top: -22px; width: 44px; }
+  .spine-mark::before { height: 5px; left: 7px; width: 5px; }
   .reader-main { padding-left: 8px; }
   .reader-page.nb-rail-open .reader-main { padding-right: 0; }
   .paper-pane { padding-inline: 18px; }
   .reader-article .moire-candidate::after { right: -14px; top: 0.4em; height: 6px; width: 6px; }
   .panel-head { padding: 12px 14px; }
-  .panel-actions button { height: 44px; min-width: 44px; }
+  .panel-head h2 { min-width: 0; }
+  .panel-actions button { align-items: center; display: inline-flex; height: 44px; justify-content: center; min-width: 44px; padding: 0; width: 44px; }
+  .panel-actions .panel-action-label, .panel-actions kbd { display: none; }
   .panel-body { padding: 12px 14px; }
   .panel-body .artifact-runtime { height: min(46vh, 380px); min-height: 240px; }
   .return-chip { left: 16px; }

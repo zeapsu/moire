@@ -37,12 +37,18 @@ export function InlineExperiment({ view, pinned, onPin, onCollapse, onRetry, onR
           <h2>{title}</h2>
           <div className="panel-actions">
             {view.status === "ready" ? (
-              <button type="button" onClick={onPin} disabled={pinned}>
-                {pinned ? "Pinned" : "Pin to notebook ↓"}
+              <button
+                type="button"
+                onClick={onPin}
+                disabled={pinned}
+                aria-label={pinned ? "Pinned to notebook" : "Pin to notebook"}
+              >
+                <span className="panel-action-label">{pinned ? "Pinned" : "Pin to notebook"}</span>
+                <span aria-hidden="true">↓</span>
               </button>
             ) : null}
-            <button type="button" onClick={onCollapse} ref={collapseRef}>
-              Collapse ↑ <kbd>Esc</kbd>
+            <button type="button" onClick={onCollapse} ref={collapseRef} aria-label="Collapse experiment">
+              <span className="panel-action-label">Collapse</span> <span aria-hidden="true">↑</span> <kbd>Esc</kbd>
             </button>
           </div>
         </header>
