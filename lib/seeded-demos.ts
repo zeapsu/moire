@@ -11,6 +11,7 @@ type SeedDefinition = {
   concept: string;
   needles: string[];
   governingMath: string;
+  groundingTerms: string[];
   parameters: VisualizationBrief["parameters"];
   expectedBehavior: string;
   caption: string;
@@ -52,9 +53,15 @@ function pickSection(sections: ScanSection[], needles: string[], used: Set<strin
 function instantiate(definitions: SeedDefinition[], sections: ScanSection[]): SeededArtifact[] | null {
   const used = new Set<string>();
   const artifacts: SeededArtifact[] = [];
+  const normalizedSource = sections.map((section) => section.text).join("\n").replace(/\s+/g, " ").trim().toLocaleLowerCase();
   for (const [index, definition] of definitions.entries()) {
     const anchor = pickSection(sections, definition.needles, used);
     if (!anchor) continue;
+    if (
+      !definition.groundingTerms.every((term) =>
+        normalizedSource.includes(term.replace(/\s+/g, " ").trim().toLocaleLowerCase()),
+      )
+    ) continue;
     used.add(anchor.selector);
     artifacts.push({
       brief: {
@@ -70,6 +77,8 @@ function instantiate(definitions: SeedDefinition[], sections: ScanSection[]): Se
         viz_kind: "simulation",
         render: "2d",
         governing_math: definition.governingMath,
+        grounding_terms: definition.groundingTerms,
+        references: [],
         parameters: definition.parameters,
         expected_behavior: definition.expectedBehavior,
         score: 0.99 - index * 0.02,
@@ -83,51 +92,54 @@ function instantiate(definitions: SeedDefinition[], sections: ScanSection[]): Se
 const ATTENTION_DEMOS: SeedDefinition[] = [
   {
     title: "Inside scaled dot-product attention",
-    concept: "Temperature turns query-key similarity into a sharp or distributed attention map.",
+    concept: "Dividing query-key dot products by √d_k changes the softmax weights on the values.",
     needles: ["softmax", "divide"],
     governingMath: "Attention(Q,K,V)=softmax(QK^T/sqrt(d_k))V",
+    groundingTerms: ["Scaled Dot-Product Attention", "queries", "keys", "values", "softmax", "weights"],
     parameters: [
-      { name: "Temperature", symbol: "T", default: 1, min: 0.25, max: 2.5, unit: "×" },
-      { name: "Query position", symbol: "q", default: 2, min: 0, max: 5, unit: "token" },
+      { name: "Key dimension", symbol: "d_k", default: 64, min: 1, max: 256, unit: "" },
+      { name: "Query", symbol: "Q", default: 2, min: 0, max: 5, unit: "row" },
     ],
-    expectedBehavior: "Lower temperature concentrates probability on the most similar key; the active query changes the row pattern.",
-    caption: "Each row is a query and each column a key. Lower temperature sharpens the softmax; move the query to watch a different token gather context.",
-    controls: `${control("temperature", "Softmax temperature", 0.25, 2.5, 1, 0.05)}${control("query", "Active query", 0, 5, 2, 1)}`,
+    expectedBehavior: "Changing d_k changes the scale applied before softmax; changing the query shows another row of weights on the values.",
+    caption: "Each row is a query and each column is a key. The dot products are divided by √d_k before softmax produces the weights on the values.",
+    controls: `${control("key-dimension", "Key dimension dₖ", 1, 256, 64, 1)}${control("query", "Query row", 0, 5, 2, 1)}`,
     script: `
-const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),temperature=document.getElementById('temperature'),query=document.getElementById('query'),temperatureOut=document.getElementById('temperature-out'),queryOut=document.getElementById('query-out');
+const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),keyDimension=document.getElementById('key-dimension'),query=document.getElementById('query'),keyDimensionOut=document.getElementById('key-dimension-out'),queryOut=document.getElementById('query-out');
 const words=['The','model','learns','what','to','attend'];
-function draw(){const T=+temperature.value,q=+query.value;temperatureOut.value=T.toFixed(2)+'×';queryOut.value=words[q];const w=canvas.width,h=canvas.height,pad=92,size=Math.min(58,(w-pad-30)/6);ctx.clearRect(0,0,w,h);ctx.font='16px system-ui';ctx.fillStyle='#9db6ba';words.forEach((x,i)=>{ctx.fillText(x,pad+i*size+5,48);ctx.fillText(x,18,98+i*size)});for(let r=0;r<6;r++){const logits=words.map((_,c)=>2.2*Math.cos((r-c)*1.12)+((r*3+c*5)%7)/9),mx=Math.max(...logits),raw=logits.map(v=>Math.exp((v-mx)/T)),sum=raw.reduce((a,b)=>a+b,0);raw.forEach((v,c)=>{const p=v/sum,x=pad+c*size,y=62+r*size;ctx.fillStyle=r===q?'rgba(117,231,209,'+(0.12+p*.88)+')':'rgba(70,112,139,'+(0.08+p*.62)+')';ctx.fillRect(x,y,size-4,size-4);ctx.fillStyle=p>.18?'#071018':'#d5e5e7';ctx.fillText(p.toFixed(2),x+10,y+34)});if(r===q){ctx.strokeStyle='#75e7d1';ctx.lineWidth=3;ctx.strokeRect(pad-4,58+r*size,6*size+2,size+4)}}}
-temperature.addEventListener('input',draw);query.addEventListener('input',draw);draw();`,
+function draw(){const dk=+keyDimension.value,q=+query.value,scale=Math.sqrt(dk)/8;keyDimensionOut.value=dk;queryOut.value=words[q];const w=canvas.width,h=canvas.height,pad=92,size=Math.min(58,(w-pad-30)/6);ctx.clearRect(0,0,w,h);ctx.font='16px system-ui';ctx.fillStyle='#9db6ba';words.forEach((x,i)=>{ctx.fillText(x,pad+i*size+5,48);ctx.fillText(x,18,98+i*size)});for(let r=0;r<6;r++){const logits=words.map((_,c)=>(2.2*Math.cos((r-c)*1.12)+((r*3+c*5)%7)/9)/scale),mx=Math.max(...logits),raw=logits.map(v=>Math.exp(v-mx)),sum=raw.reduce((a,b)=>a+b,0);raw.forEach((v,c)=>{const p=v/sum,x=pad+c*size,y=62+r*size;ctx.fillStyle=r===q?'rgba(117,231,209,'+(0.12+p*.88)+')':'rgba(70,112,139,'+(0.08+p*.62)+')';ctx.fillRect(x,y,size-4,size-4);ctx.fillStyle=p>.18?'#071018':'#d5e5e7';ctx.fillText(p.toFixed(2),x+10,y+34)});if(r===q){ctx.strokeStyle='#75e7d1';ctx.lineWidth=3;ctx.strokeRect(pad-4,58+r*size,6*size+2,size+4)}}}
+keyDimension.addEventListener('input',draw);query.addEventListener('input',draw);draw();`,
   },
   {
-    title: "Multi-head attention as parallel viewpoints",
-    concept: "Different heads can specialize in local, syntactic, and long-range relationships.",
-    needles: ["multi-head attention", "parallel"],
+    title: "Multi-head attention in parallel",
+    concept: "Queries, keys, and values are linearly projected h times in parallel before the outputs are concatenated.",
+    needles: ["linearly project"],
     governingMath: "MultiHead(Q,K,V)=Concat(head_1,...,head_h)W^O",
+    groundingTerms: ["queries", "keys", "values", "linearly project", "in parallel", "concatenated"],
     parameters: [
       { name: "Head", symbol: "h_i", default: 1, min: 1, max: 4, unit: "index" },
       { name: "Focus", symbol: "alpha", default: 0.7, min: 0.2, max: 1, unit: "" },
     ],
-    expectedBehavior: "Changing heads reveals distinct connection patterns; increasing focus strengthens the selected relations.",
-    caption: "The same sentence is projected four ways. Switch heads to expose a local, mirrored, syntactic, or global relationship pattern before their outputs are concatenated.",
-    controls: `${control("head", "Attention head", 1, 4, 1, 1)}${control("focus", "Connection focus", 0.2, 1, 0.7, 0.05)}`,
+    expectedBehavior: "Changing the head shows a different projected representation; increasing the weight strengthens its displayed relations.",
+    caption: "The queries, keys, and values are linearly projected in parallel. Change the displayed head before the outputs are concatenated.",
+    controls: `${control("head", "Head", 1, 4, 1, 1)}${control("focus", "Weight", 0.2, 1, 0.7, 0.05)}`,
     script: `
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),head=document.getElementById('head'),focus=document.getElementById('focus'),headOut=document.getElementById('head-out'),focusOut=document.getElementById('focus-out');const words=['A','small','bird','crossed','the','bright','sky'];
-function draw(){const n=+head.value,f=+focus.value;headOut.value=n;focusOut.value=Math.round(f*100)+'%';ctx.clearRect(0,0,canvas.width,canvas.height);const xs=words.map((_,i)=>82+i*128),y=385;ctx.font='18px system-ui';ctx.textAlign='center';words.forEach((word,i)=>{ctx.fillStyle='#dcebed';ctx.fillText(word,xs[i],y+45);ctx.beginPath();ctx.fillStyle='#163747';ctx.arc(xs[i],y,24,0,Math.PI*2);ctx.fill()});const pairs=n===1?[[0,1],[1,2],[2,3],[3,4],[4,5],[5,6]]:n===2?[[0,6],[1,5],[2,4],[3,3]]:n===3?[[2,3],[3,0],[3,6],[5,6]]:[[0,3],[1,3],[2,3],[4,3],[5,3],[6,3]];pairs.forEach((pair,i)=>{const a=xs[pair[0]],b=xs[pair[1]],lift=85+Math.abs(pair[1]-pair[0])*20;ctx.beginPath();ctx.moveTo(a,y-20);ctx.quadraticCurveTo((a+b)/2,y-lift,b,y-20);ctx.strokeStyle='rgba(117,231,209,'+(f*(.35+(i%3)*.22))+')';ctx.lineWidth=2+(i%3);ctx.stroke()});ctx.fillStyle='#75e7d1';ctx.font='700 14px ui-monospace';ctx.fillText(['','LOCAL CONTEXT','MIRRORED SPAN','SYNTACTIC ROLE','GLOBAL HUB'][n],canvas.width/2,55)}
+function draw(){const n=+head.value,f=+focus.value;headOut.value=n;focusOut.value=Math.round(f*100)+'%';ctx.clearRect(0,0,canvas.width,canvas.height);const xs=words.map((_,i)=>82+i*128),y=385;ctx.font='18px system-ui';ctx.textAlign='center';words.forEach((word,i)=>{ctx.fillStyle='#dcebed';ctx.fillText(word,xs[i],y+45);ctx.beginPath();ctx.fillStyle='#163747';ctx.arc(xs[i],y,24,0,Math.PI*2);ctx.fill()});const pairs=n===1?[[0,1],[1,2],[2,3],[3,4],[4,5],[5,6]]:n===2?[[0,6],[1,5],[2,4],[3,3]]:n===3?[[2,3],[3,0],[3,6],[5,6]]:[[0,3],[1,3],[2,3],[4,3],[5,3],[6,3]];pairs.forEach((pair,i)=>{const a=xs[pair[0]],b=xs[pair[1]],lift=85+Math.abs(pair[1]-pair[0])*20;ctx.beginPath();ctx.moveTo(a,y-20);ctx.quadraticCurveTo((a+b)/2,y-lift,b,y-20);ctx.strokeStyle='rgba(117,231,209,'+(f*(.35+(i%3)*.22))+')';ctx.lineWidth=2+(i%3);ctx.stroke()});ctx.fillStyle='#75e7d1';ctx.font='700 14px ui-monospace';ctx.fillText('HEAD '+n,canvas.width/2,55)}
 head.addEventListener('input',draw);focus.addEventListener('input',draw);draw();`,
   },
   {
-    title: "The geometry of positional encoding",
-    concept: "A bank of sinusoids gives every token a unique, smoothly related coordinate.",
+    title: "Sine and cosine positional encodings",
+    concept: "Sine and cosine functions of different frequencies add relative or absolute position information.",
     needles: ["positional encodings", "order"],
     governingMath: "PE(pos,2i)=sin(pos/10000^(2i/d_model)); PE(pos,2i+1)=cos(...) ",
+    groundingTerms: ["positional encodings", "relative or absolute position", "sine and cosine functions", "different frequencies"],
     parameters: [
       { name: "Position", symbol: "pos", default: 18, min: 0, max: 80, unit: "token" },
       { name: "Dimension", symbol: "i", default: 4, min: 0, max: 15, unit: "channel" },
     ],
-    expectedBehavior: "Position moves the cursor; higher dimensions change more slowly across the sequence.",
-    caption: "Adjacent tokens receive nearby phase signatures while different channels oscillate at geometrically spaced wavelengths. The cursor samples one token's coordinate.",
-    controls: `${control("position", "Token position", 0, 80, 18, 1)}${control("dimension", "Encoding channel", 0, 15, 4, 1)}`,
+    expectedBehavior: "Position moves the sample; changing dimension changes the frequency of the sine or cosine function.",
+    caption: "The positional encoding uses sine and cosine functions of different frequencies. The sample shows one position and dimension.",
+    controls: `${control("position", "Position", 0, 80, 18, 1)}${control("dimension", "Dimension i", 0, 15, 4, 1)}`,
     script: `
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),position=document.getElementById('position'),dimension=document.getElementById('dimension'),positionOut=document.getElementById('position-out'),dimensionOut=document.getElementById('dimension-out');
 function draw(){const pos=+position.value,dim=+dimension.value;positionOut.value=pos;dimensionOut.value=dim;ctx.clearRect(0,0,canvas.width,canvas.height);const left=60,right=920,top=60,bottom=430,scale=Math.pow(10000,2*Math.floor(dim/2)/32),fn=dim%2?Math.cos:Math.sin;ctx.strokeStyle='#294753';ctx.beginPath();ctx.moveTo(left,(top+bottom)/2);ctx.lineTo(right,(top+bottom)/2);ctx.stroke();ctx.beginPath();for(let x=0;x<=80;x++){const px=left+x/80*(right-left),py=(top+bottom)/2-fn(x/scale)*135;x?ctx.lineTo(px,py):ctx.moveTo(px,py)}ctx.strokeStyle='#75e7d1';ctx.lineWidth=4;ctx.stroke();const px=left+pos/80*(right-left),value=fn(pos/scale),py=(top+bottom)/2-value*135;ctx.setLineDash([7,7]);ctx.strokeStyle='#e8a96b';ctx.beginPath();ctx.moveTo(px,top);ctx.lineTo(px,bottom);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#e8a96b';ctx.beginPath();ctx.arc(px,py,9,0,Math.PI*2);ctx.fill();ctx.font='16px ui-monospace';ctx.fillText((dim%2?'cos':'sin')+' = '+value.toFixed(3),left,35)}
@@ -137,16 +149,17 @@ position.addEventListener('input',draw);dimension.addEventListener('input',draw)
 
 const PHYSICS_DEMOS: SeedDefinition[] = [
   {
-    title: "Kibble–Zurek domain birth",
-    concept: "A faster quench freezes a shorter correlation length and leaves more independent domains.",
+    title: "Number of domains and quench time",
+    concept: "The number of domains produced in the quench scales with quench time.",
     needles: ["number of domains", "quench time"],
     governingMath: "N_q ~ tau_q^(-nu/(1+nu z))",
+    groundingTerms: ["number of domains", "quench time", "power law", "scaling"],
     parameters: [
       { name: "Quench time", symbol: "tau_q", default: 80, min: 10, max: 400, unit: "ms" },
       { name: "Scaling exponent", symbol: "nu/(1+nu z)", default: 0.33, min: 0.2, max: 0.6, unit: "" },
     ],
-    expectedBehavior: "Longer quenches produce fewer, wider spin domains according to the selected power-law exponent.",
-    caption: "The strip represents local magnetization after crossing the transition. Slower quenches preserve communication over longer distances, so fewer domain walls survive.",
+    expectedBehavior: "Changing quench time changes the number of domains according to the selected power law.",
+    caption: "The strip shows how the number and size of domains vary with quench time according to the power law.",
     controls: `${control("quench", "Quench time", 10, 400, 80, 5)}${control("exponent", "KZM exponent", 0.2, 0.6, 0.33, 0.01)}`,
     script: `
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),quench=document.getElementById('quench'),exponent=document.getElementById('exponent'),quenchOut=document.getElementById('quench-out'),exponentOut=document.getElementById('exponent-out');
@@ -154,16 +167,17 @@ function draw(){const tq=+quench.value,a=+exponent.value,N=Math.max(2,Math.round
 quench.addEventListener('input',draw);exponent.addEventListener('input',draw);draw();`,
   },
   {
-    title: "Freeze-out across the critical point",
-    concept: "Critical slowing down creates an impulse window where the condensate can no longer follow the ramp.",
+    title: "Freezing time and non-adiabatic evolution",
+    concept: "The freezing time defines when the evolution becomes non-adiabatic.",
     needles: ["freezing time", "non-adiabatic"],
     governingMath: "hat(t)=(tau_0 tau_q^(nu z))^(1/(1+nu z))",
+    groundingTerms: ["freezing time", "KZM", "non-adiabatic", "quench time scale", "relaxation time"],
     parameters: [
       { name: "Quench time", symbol: "tau_q", default: 120, min: 20, max: 400, unit: "ms" },
       { name: "Dynamic exponent", symbol: "z", default: 2, min: 1, max: 3, unit: "" },
     ],
-    expectedBehavior: "Increasing quench time or the dynamic exponent widens the freeze-out time relative to microscopic response.",
-    caption: "Near the transition, the relaxation time rises faster than the remaining ramp time. The amber interval is the non-adiabatic freeze-out window where defects are selected.",
+    expectedBehavior: "Changing quench time or z changes the freezing time obtained from the quench and relaxation time scales.",
+    caption: "The freezing time is identified by equating the quench time scale to the relaxation time; the highlighted interval marks non-adiabatic evolution.",
     controls: `${control("freeze-quench", "Quench time", 20, 400, 120, 5)}${control("dynamic-z", "Dynamic exponent z", 1, 3, 2, 0.05)}`,
     script: `
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),quench=document.getElementById('freeze-quench'),z=document.getElementById('dynamic-z'),quenchOut=document.getElementById('freeze-quench-out'),zOut=document.getElementById('dynamic-z-out');
@@ -171,16 +185,17 @@ function draw(){const tq=+quench.value,dz=+z.value,hat=Math.min(36,7*Math.pow(tq
 quench.addEventListener('input',draw);z.addEventListener('input',draw);draw();`,
   },
   {
-    title: "Spin–orbit dispersion splits in two",
-    concept: "Raman coupling reshapes the lower dispersion branch and controls whether one or two minima are favored.",
+    title: "Lower branch with one or two minima",
+    concept: "The lower branch has one or two minima depending on Ω.",
     needles: ["lower branch", "dispersion"],
     governingMath: "E_-(k)=k^2/2-sqrt((gamma k-delta/2)^2+(Omega/2)^2)",
+    groundingTerms: ["lower branch", "dispersion", "one or two minima"],
     parameters: [
       { name: "Raman coupling", symbol: "Omega/Omega_c", default: 0.75, min: 0.4, max: 1.5, unit: "" },
       { name: "Detuning", symbol: "delta", default: 0, min: -0.8, max: 0.8, unit: "E_r" },
     ],
-    expectedBehavior: "Below critical coupling the lower branch has two minima; stronger coupling merges them, while detuning tilts their balance.",
-    caption: "The two colored curves are the dressed single-particle branches. Crossing the critical Raman coupling merges the pair of lower-branch minima that seed opposite-momentum domains.",
+    expectedBehavior: "Changing Ω shows when the lower branch has one or two minima; detuning changes the displayed dispersion.",
+    caption: "The curves show the dispersion branches. Change Ω to see when the lower branch has one or two minima.",
     controls: `${control("raman", "Raman coupling Ω/Ωc", 0.4, 1.5, 0.75, 0.01)}${control("detuning", "Detuning δ", -0.8, 0.8, 0, 0.02)}`,
     script: `
 const canvas=document.getElementById('view'),ctx=canvas.getContext('2d'),raman=document.getElementById('raman'),detuning=document.getElementById('detuning'),ramanOut=document.getElementById('raman-out'),detuningOut=document.getElementById('detuning-out');
@@ -191,10 +206,11 @@ raman.addEventListener('input',draw);detuning.addEventListener('input',draw);dra
 
 const PENDULUM_DEMOS: SeedDefinition[] = [
   {
-    title: "Chaos from a one-degree difference",
-    concept: "Two nearly identical double pendulums separate rapidly under nonlinear dynamics.",
+    title: "Nearly identical initial conditions diverge",
+    concept: "Two double pendulums with nearly identical initial conditions diverge over time.",
     needles: ["nearly identical", "diverge"],
     governingMath: "Coupled nonlinear Euler-Lagrange equations for theta_1 and theta_2",
+    groundingTerms: ["nearly identical", "initial conditions", "diverge"],
     parameters: [
       { name: "Initial angle", symbol: "theta_1", default: 118, min: 60, max: 170, unit: "deg" },
       { name: "Difference", symbol: "Delta theta", default: 1, min: 0.1, max: 4, unit: "deg" },

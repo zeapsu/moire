@@ -20,6 +20,8 @@ const entry: NotebookEntry = {
     viz_kind: "interactive-plot",
     render: "2d",
     governing_math: "x",
+    grounding_terms: ["passage"],
+    references: [],
     parameters: [{ name: "Speed", symbol: "v", default: 1, min: 0, max: 2, unit: "m/s" }],
     expected_behavior: "The plot responds.",
     score: 0.9,

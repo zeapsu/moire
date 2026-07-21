@@ -82,6 +82,7 @@ function artifactIdForKey(key: string): string {
 function persistedRecord(value: unknown): PersistedArtifactRecord | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<PersistedArtifactRecord>;
+  const parsedBrief = briefSchema.safeParse(candidate.brief);
   if (
     typeof candidate.artifactId !== "string" ||
     typeof candidate.cacheKey !== "string" ||
@@ -89,7 +90,7 @@ function persistedRecord(value: unknown): PersistedArtifactRecord | null {
     (candidate.kind !== "page" && candidate.kind !== "selection") ||
     !["idle", "generating", "ready", "repairing", "error"].includes(candidate.status ?? "") ||
     typeof candidate.lastAccessedAt !== "number" ||
-    !briefSchema.safeParse(candidate.brief).success ||
+    !parsedBrief.success ||
     !repairStateSchema.safeParse(candidate.repairState).success
   ) {
     return null;
@@ -106,7 +107,7 @@ function persistedRecord(value: unknown): PersistedArtifactRecord | null {
       return null;
     }
   }
-  return candidate as PersistedArtifactRecord;
+  return { ...(candidate as PersistedArtifactRecord), brief: parsedBrief.data };
 }
 
 async function persistRecord(record: ArtifactRecord): Promise<void> {
@@ -287,6 +288,7 @@ export async function primeCachedArtifacts(
       const record = store.byId.get(candidate.artifactId);
       const html = htmlByArtifact.get(candidate.artifactId);
       if (!record || !html) return candidate;
+      record.brief = candidate.brief;
       const validation = validateArtifact(html, record.brief.render, record.brief.parameters.length);
       if (!validation.ok) {
         throw new Error(`Curated artifact ${record.artifactId} is invalid: ${validation.errors.join(" ")}`);

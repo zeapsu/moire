@@ -28,9 +28,9 @@ describe("curated demo registry", () => {
     expectValidSeed(
       "https://arxiv.org/abs/1706.03762",
       sections([
-        "We divide each query-key score before applying softmax.",
-        "Multi-head attention consists of several attention layers running in parallel.",
-        "Positional encodings inject information about token order.",
+        "We call this Scaled Dot-Product Attention. The queries and keys are divided before softmax produces weights on the values.",
+        "The queries, keys, and values are linearly projected in parallel and the outputs are concatenated for multi-head attention.",
+        "Positional encodings use sine and cosine functions of different frequencies for relative or absolute position and order.",
       ]),
       3,
     );
@@ -40,9 +40,9 @@ describe("curated demo registry", () => {
     expectValidSeed(
       "https://arxiv.org/abs/1811.05327",
       sections([
-        "The number of domains follows a power law in quench time.",
-        "The freezing time identifies when evolution becomes non-adiabatic.",
-        "The lower branch of the dispersion changes across the transition.",
+        "The number of domains follows a power law scaling in quench time.",
+        "The freezing time is pivotal in KZM and identifies when evolution becomes non-adiabatic by equating the quench time scale to the relaxation time.",
+        "The lower branch of the dispersion has one or two minima across the transition.",
       ]),
       3,
     );
@@ -51,7 +51,7 @@ describe("curated demo registry", () => {
   it("provides a validated non-arXiv double-pendulum simulation", () => {
     expectValidSeed(
       "https://en.wikipedia.org/wiki/Double_pendulum",
-      sections(["Three nearly identical starting conditions diverge over time."]),
+      sections(["Three nearly identical initial conditions diverge over time."]),
       1,
     );
   });

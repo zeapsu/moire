@@ -75,8 +75,12 @@ export async function POST(request: Request) {
     });
     let artifacts = await synchronizeArtifactBriefs(registered);
     if (seeded) {
+      const currentSeedDescriptors = artifacts.map((artifact, index) => ({
+        ...artifact,
+        brief: seeded[index].brief,
+      }));
       artifacts = await primeCachedArtifacts(
-        artifacts,
+        currentSeedDescriptors,
         new Map(artifacts.map((artifact, index) => [artifact.artifactId, seeded[index].html])),
       );
     }

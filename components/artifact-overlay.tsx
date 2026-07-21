@@ -54,6 +54,7 @@ export function ArtifactOverlay({ view, onClose, onMinimize, onRuntimeFailure }:
   }, [onClose]);
 
   const title = view.status === "ready" ? view.descriptor.brief.title : view.title;
+  const references = view.status === "ready" ? (view.descriptor.brief.references ?? []) : [];
 
   return (
     <div
@@ -83,6 +84,17 @@ export function ArtifactOverlay({ view, onClose, onMinimize, onRuntimeFailure }:
             </button>
           </div>
         </header>
+
+        {references.length > 0 ? (
+          <nav className="overlay-references" aria-label="Definitions used by this visualization">
+            <span>Defined outside this paper</span>
+            {references.map((reference) => (
+              <a href={reference.url} target="_blank" rel="noreferrer" key={`${reference.term}:${reference.url}`}>
+                {reference.term}: {reference.label} ↗
+              </a>
+            ))}
+          </nav>
+        ) : null}
 
         <div className="overlay-body" aria-live="polite">
           {view.status === "loading" ? (

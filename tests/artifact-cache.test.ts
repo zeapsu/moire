@@ -28,11 +28,14 @@ vi.mock("@/lib/artifact", () => ({
   generateArtifact: generateArtifactMock,
   promoteArtifactTask: promoteArtifactTaskMock,
   repairRuntimeFailure: repairRuntimeFailureMock,
+  validateArtifact: (html: string) => ({ ok: true, errors: [], bytes: Buffer.byteLength(html) }),
+  withArtifactCsp: (html: string) => html,
 }));
 
 import {
   ArtifactNotFoundError,
   generateCachedArtifact,
+  primeCachedArtifacts,
   readyCachedArtifacts,
   registerArtifactBriefs,
   repairCachedArtifact,
@@ -50,6 +53,8 @@ const brief: VisualizationBrief = {
   viz_kind: "interactive-plot",
   render: "2d",
   governing_math: "x",
+  grounding_terms: ["passage"],
+  references: [],
   parameters: [{ name: "Speed", symbol: "v", default: 1, min: 0, max: 2, unit: "m/s" }],
   expected_behavior: "The plot responds to speed.",
   score: 0.9,
@@ -91,6 +96,20 @@ describe("server-owned artifact cache", () => {
     expect(first[0].artifactId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(second[0].artifactId).toBe(first[0].artifactId);
     expect(otherTarget[0].artifactId).not.toBe(first[0].artifactId);
+  });
+
+  it("refreshes curated metadata when a seeded artifact is re-primed", async () => {
+    const [registered] = registerArtifactBriefs("https://example.com/paper", [brief]);
+    const refreshed = {
+      ...registered,
+      brief: { ...brief, title: "Grounded title", grounding_terms: ["useful passage"] },
+    };
+    const html = `<!doctype html><html><head></head><body><label for="speed">Speed</label><input id="speed" type="range"><p>What you're seeing: the plot responds.</p><script>document.getElementById('speed').addEventListener('input',()=>{});window.parent.postMessage({ready:true},'*')</script></body></html>`;
+
+    const [primed] = await primeCachedArtifacts([refreshed], new Map([[registered.artifactId, html]]));
+
+    expect(primed.brief.title).toBe("Grounded title");
+    expect(primed.brief.grounding_terms).toEqual(["useful passage"]);
   });
 
   it("restores an artifact across isolated Vercel functions and reuses the durable result", async () => {

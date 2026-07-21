@@ -201,6 +201,8 @@ function generatorInstructions(brief: VisualizationBrief): string {
     "Use inline CSS and JavaScript. Make the visualization responsive, accessible, and legible on a dark canvas.",
     "Create a labeled input[type=range] with a unique id for every supplied parameter. Reference every id in JavaScript and bind an input event listener to visible behavior.",
     "Include a concise paragraph labeled 'What you're seeing' that explains the behavior in plain language.",
+    "Use only technical terminology found in anchor.text_excerpt, grounding_terms, governing_math, and parameter symbols. Ordinary interface words are allowed, but do not coin technical labels, metaphors, or domain claims.",
+    "The references array is the only exception for technical terminology not defined by the paper. Moiré renders those links outside this sandbox, so do not add links or external URLs to the artifact HTML.",
     networkRule,
     "Do not use fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon, forms, cookies, storage, or navigation.",
     "After successful initialization, call window.parent.postMessage({ready:true}, '*').",

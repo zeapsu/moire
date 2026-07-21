@@ -11,6 +11,14 @@ export const parameterSchema = z
   })
   .strict();
 
+export const referenceSchema = z
+  .object({
+    term: z.string().min(1),
+    label: z.string().min(1),
+    url: z.string().regex(/^https?:\/\/[^\s]+$/i),
+  })
+  .strict();
+
 export const briefSchema = z
   .object({
     span_id: z.string().regex(/^s-\d+$/),
@@ -27,6 +35,8 @@ export const briefSchema = z
     viz_kind: z.enum(["simulation", "animated-diagram", "interactive-plot", "3d-scene"]),
     render: z.enum(["2d", "3d"]),
     governing_math: z.string(),
+    grounding_terms: z.array(z.string().min(1)).min(1).max(12).default([]),
+    references: z.array(referenceSchema).max(4).default([]),
     parameters: z.array(parameterSchema).min(1).max(6),
     expected_behavior: z.string().min(1),
     score: z.number().min(0).max(1),
