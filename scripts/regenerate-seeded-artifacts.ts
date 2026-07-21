@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { getOpenAI } from "@/lib/openai";
 import { generatorInstructions, validateArtifact, withArtifactCsp } from "@/lib/artifact";
@@ -15,6 +15,16 @@ const TARGETS = [
   "https://arxiv.org/abs/1811.05327",
   "https://en.wikipedia.org/wiki/Double_pendulum",
   "https://arxiv.org/abs/2308.04079",
+] as const;
+const REPACK_ARTIFACTS = [
+  ["Inside scaled dot-product attention", "inside-scaled-dot-product-attention.html"],
+  ["Multi-head attention in parallel", "multi-head-attention-in-parallel.html"],
+  ["Sine and cosine positional encodings", "sine-and-cosine-positional-encodings.html"],
+  ["Number of domains and quench time", "number-of-domains-and-quench-time.html"],
+  ["Freezing time and non-adiabatic evolution", "freezing-time-and-non-adiabatic-evolution.html"],
+  ["Lower branch with one or two minima", "lower-branch-with-one-or-two-minima.html"],
+  ["Nearly identical initial conditions diverge", "pendulum-runtime-repaired.html"],
+  ["Anisotropy: 3D Gaussians align with surfaces", "anisotropy-3d-gaussians-align-with-surfaces.html"],
 ] as const;
 
 type CallMetric = {
@@ -40,6 +50,28 @@ function outputDirectory(): string {
     throw new Error("Pass an absolute temporary output directory as the first argument.");
   }
   return supplied;
+}
+
+async function repackExisting(): Promise<void> {
+  const sourceDirectory = process.argv[3];
+  const destinationFile = process.argv[4];
+  if (!sourceDirectory || !path.isAbsolute(sourceDirectory) || !destinationFile || !path.isAbsolute(destinationFile)) {
+    throw new Error("Usage: regenerate-seeded-artifacts.ts --repack /absolute/source-directory /absolute/seeded-artifacts.json");
+  }
+
+  const artifacts = Object.fromEntries(
+    await Promise.all(
+      REPACK_ARTIFACTS.map(async ([title, filename]) => {
+        const html = (await readFile(path.join(sourceDirectory, filename), "utf8")).trim();
+        const render = title === "Anisotropy: 3D Gaussians align with surfaces" ? "3d" : "2d";
+        const validation = validateArtifact(html, render);
+        if (!validation.ok) throw new Error(`${title} failed repack validation: ${validation.errors.join(" ")}`);
+        return [title, html] as const;
+      }),
+    ),
+  );
+  await writeFile(destinationFile, `${JSON.stringify(artifacts, null, 2)}\n`, "utf8");
+  console.log(`[repacked] ${REPACK_ARTIFACTS.length} artifacts written to ${destinationFile}`);
 }
 
 function safeFilename(value: string): string {
@@ -161,7 +193,8 @@ async function main(): Promise<void> {
   console.log(`[complete] ${tasks.length} artifacts written to ${destination}`);
 }
 
-main().catch((error: unknown) => {
+const run = process.argv[2] === "--repack" ? repackExisting : main;
+run().catch((error: unknown) => {
   console.error(error);
   process.exitCode = 1;
 });

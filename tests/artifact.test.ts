@@ -41,6 +41,8 @@ describe("artifact validation", () => {
     expect(instructions).toContain("at least 72%");
     expect(instructions).toContain("emit no h1 element");
     expect(instructions).toContain("stage-first fallback");
+    expect(instructions).toContain("Preserve mathematical notation");
+    expect(instructions).toContain("text never overlaps");
   });
 
   it("keeps Three.js out of the 2D generation contract", () => {
