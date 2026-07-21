@@ -119,6 +119,63 @@ a { color: inherit; }
 .reader-article :where(td,th) { border: 1px solid var(--line); padding: 0.5rem; }
 .reader-article pre { background: #eaf0f6; font-family: var(--utility); font-size: 0.75rem; overflow: auto; padding: 1rem; }
 
+/* Scoped LaTeXML layout for official arXiv HTML. Source styles and non-ltx classes stay untrusted. */
+.paper-pane.is-arxiv { max-width: 1120px; padding-top: clamp(2.2rem, 4vw, 4rem); }
+.reader-article.is-arxiv .ltx_document { color: #202d40; font-family: var(--display); margin: 0 auto; max-width: 82ch; }
+.reader-article.is-arxiv .ltx_title_document { font-family: var(--body); font-size: clamp(2.2rem, 5vw, 4.6rem); font-weight: 650; letter-spacing: -0.045em; line-height: 1.02; margin: 1.2rem auto 1.6rem; max-width: 18ch; text-align: center; }
+.reader-article.is-arxiv .ltx_authors { color: #3e4e64; font-size: 0.86rem; line-height: 1.55; margin: 0 auto 2.5rem; max-width: 76ch; text-align: center; }
+.reader-article.is-arxiv .ltx_creator { display: inline; }
+.reader-article.is-arxiv .ltx_author_before:empty { display: none; }
+.reader-article.is-arxiv .ltx_personname { white-space: normal; }
+.reader-article.is-arxiv .ltx_author_notes { border-top: 1px solid var(--line); color: var(--ink-soft); display: block; font-size: 0.72rem; line-height: 1.55; margin: 1.25rem auto 0; max-width: 72ch; padding-top: 0.85rem; text-align: left; }
+.reader-article.is-arxiv .ltx_note_outer { display: none; }
+.reader-article.is-arxiv .ltx_abstract { background: #edf3f7; border-left: 3px solid #9ab7c7; margin: 2.4rem auto 3.5rem; max-width: 72ch; padding: 1.2rem 1.4rem; }
+.reader-article.is-arxiv .ltx_title_abstract { color: var(--ink-soft); font-family: var(--utility); font-size: 0.64rem; letter-spacing: 0.12em; margin: 0 0 0.65rem; text-transform: uppercase; }
+.reader-article.is-arxiv :where(.ltx_section,.ltx_subsection,.ltx_subsubsection,.ltx_paragraph) { min-width: 0; }
+.reader-article.is-arxiv .ltx_para { margin: 0.75rem 0; }
+.reader-article.is-arxiv .ltx_p { margin: 0.7rem 0; max-width: none; }
+.reader-article.is-arxiv .ltx_noindent > .ltx_p { text-indent: 0; }
+.reader-article.is-arxiv .ltx_title_section { border-bottom: 1px solid var(--line); font-size: 1.6rem; padding-bottom: 0.45rem; }
+.reader-article.is-arxiv .ltx_title_subsection { font-size: 1.28rem; }
+.reader-article.is-arxiv .ltx_title_subsubsection { font-size: 1.08rem; }
+.reader-article.is-arxiv .ltx_title_paragraph { font-size: 0.98rem; margin-bottom: 0.35rem; }
+.reader-article.is-arxiv .ltx_tag { color: #60748b; font-family: var(--utility); font-size: 0.78em; font-weight: 550; }
+.reader-article.is-arxiv .ltx_cite { white-space: normal; }
+.reader-article.is-arxiv .ltx_cite .ltx_ref { white-space: nowrap; }
+.reader-article.is-arxiv .ltx_Math[display="inline"] { display: inline-block; margin: 0 0.08em; max-width: 100%; overflow-x: auto; vertical-align: -0.18em; }
+.reader-article.is-arxiv :where(.ltx_equation,.ltx_equationgroup,.ltx_formula) { margin: 1.25rem auto; overflow-x: auto; padding: 0.3rem 0; text-align: center; }
+.reader-article.is-arxiv table.ltx_eqn_table { border-collapse: separate; display: table; margin: 0 auto; table-layout: auto; width: auto; }
+.reader-article.is-arxiv .ltx_eqn_row { display: table-row; }
+.reader-article.is-arxiv :where(.ltx_eqn_cell,.ltx_eqn_eqno) { border: 0; display: table-cell; padding: 0.15rem 0.35rem; vertical-align: middle; }
+.reader-article.is-arxiv .ltx_eqn_eqno { color: var(--ink-soft); font-size: 0.75rem; text-align: right; white-space: nowrap; }
+.reader-article.is-arxiv :where(.ltx_figure,.ltx_table) { border-block: 1px solid var(--line); margin: 2.25rem auto; max-width: 100%; padding: 1.25rem 0; text-align: center; }
+.reader-article.is-arxiv .ltx_graphics { height: auto; margin-inline: auto; max-height: 72svh; max-width: 100%; object-fit: contain; }
+.reader-article.is-arxiv .ltx_caption { color: var(--ink-soft); font-family: var(--body); font-size: 0.76rem; line-height: 1.5; margin: 0.8rem auto 0; max-width: 72ch; text-align: left; }
+.reader-article.is-arxiv .ltx_flex_figure { align-items: start; display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
+.reader-article.is-arxiv .ltx_flex_cell { flex: 1 1 240px; min-width: 0; }
+.reader-article.is-arxiv .ltx_table_scroll { max-width: 100%; overflow-x: auto; }
+.reader-article.is-arxiv table.ltx_tabular { border-collapse: collapse; display: table; margin: 1rem auto; width: auto; }
+.reader-article.is-arxiv :where(.ltx_td,.ltx_th) { border: 0; padding: 0.32rem 0.5rem; }
+.reader-article.is-arxiv :where(.ltx_border_t,.ltx_border_tt) { border-top: 1px solid #7f8da0; }
+.reader-article.is-arxiv :where(.ltx_border_b,.ltx_border_bb) { border-bottom: 1px solid #7f8da0; }
+.reader-article.is-arxiv .ltx_border_r { border-right: 1px solid #9ca9b9; }
+.reader-article.is-arxiv .ltx_align_center { text-align: center; }
+.reader-article.is-arxiv .ltx_align_left { text-align: left; }
+.reader-article.is-arxiv .ltx_align_right { text-align: right; }
+.reader-article.is-arxiv .ltx_font_bold { font-weight: 700; }
+.reader-article.is-arxiv .ltx_font_italic { font-style: italic; }
+.reader-article.is-arxiv .ltx_font_typewriter { font-family: var(--utility); font-size: 0.88em; }
+.reader-article.is-arxiv .ltx_bibliography { font-size: 0.84rem; line-height: 1.55; }
+.reader-article.is-arxiv .ltx_bibitem { display: grid; gap: 0.5rem; grid-template-columns: 2.4rem minmax(0, 1fr); margin: 0.65rem 0; }
+.reader-article.is-arxiv .ltx_tag_bibitem { text-align: right; }
+
+@media (max-width: 720px) {
+  .reader-article.is-arxiv .ltx_authors { font-size: 0.78rem; }
+  .reader-article.is-arxiv .ltx_title_document { font-size: clamp(2rem, 10vw, 3rem); }
+  .reader-article.is-arxiv .ltx_bibitem { display: block; }
+  .reader-article.is-arxiv .ltx_tag_bibitem { display: inline-block; margin-right: 0.45rem; }
+}
+
 .lab-rail { align-self: stretch; background: var(--night); border-left: 1px solid #24334a; color: #ecf5ff; min-height: calc(100svh - 66px); padding: 1.3rem; position: sticky; top: 66px; }
 .rail-heading { align-items: center; border-bottom: 1px solid #25364e; display: flex; justify-content: space-between; padding: 0.4rem 0 1rem; }
 .rail-heading p { font-family: var(--utility); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.11em; margin: 0; text-transform: uppercase; }

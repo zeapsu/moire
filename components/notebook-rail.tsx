@@ -4,7 +4,7 @@ import type { NotebookEntry } from "@/lib/notebook";
 import type { ArtifactDescriptor } from "@/lib/types";
 
 type NotebookRailProps = {
-  scanState: "loading" | "ready" | "error";
+  scanState: "loading" | "ready" | "error" | "paused";
   scanError: string;
   artifacts: ArtifactDescriptor[];
   entries: NotebookEntry[];
@@ -35,11 +35,18 @@ export function NotebookRail({
         <div>
           <span className={scanState === "error" ? "is-error" : ""} />
           <strong>
-            {scanState === "loading" ? "Scanning the paper" : scanState === "error" ? "Scan stopped" : "Speculative views"}
+            {scanState === "loading"
+              ? "Scanning the paper"
+              : scanState === "error"
+                ? "Scan stopped"
+                : scanState === "paused"
+                  ? "AI paused for QA"
+                  : "Speculative views"}
           </strong>
         </div>
         {scanState === "loading" ? <p>Finding passages that become clearer when they move.</p> : null}
         {scanState === "error" ? <p>{scanError}</p> : null}
+        {scanState === "paused" ? <p>Reading layout only. No scan or generation requests will be sent.</p> : null}
         {scanState === "ready" && artifacts.length === 0 ? <p>No strong interactive passages were found.</p> : null}
         {scanState === "ready" && artifacts.length > 0 ? (
           <p>{readyCount} of {speculative.length} ready{failedCount ? ` · ${failedCount} unavailable` : ""}. Hover a marked passage.</p>

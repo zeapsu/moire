@@ -46,9 +46,17 @@ function responseMessage(data: unknown, fallback: string): string {
   return fallback;
 }
 
-export function ReaderShell({ document: sourceDocument }: { document: IngestedDocument }) {
+export function ReaderShell({
+  document: sourceDocument,
+  aiEnabled = true,
+}: {
+  document: IngestedDocument;
+  aiEnabled?: boolean;
+}) {
   const [artifacts, setArtifacts] = useState<ArtifactDescriptor[]>([]);
-  const [scanState, setScanState] = useState<"loading" | "ready" | "error">("loading");
+  const [scanState, setScanState] = useState<"loading" | "ready" | "error" | "paused">(
+    aiEnabled ? "loading" : "paused",
+  );
   const [scanError, setScanError] = useState("");
   const [view, setView] = useState<ArtifactView | null>(null);
   const [prompt, setPrompt] = useState<AnchorPrompt | null>(null);
@@ -79,6 +87,17 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
 
   const requestArtifact = useCallback(
     async (descriptor: ArtifactDescriptor, options: ArtifactRequestOptions) => {
+      if (!aiEnabled) {
+        if (options.open) {
+          setView({
+            status: "error",
+            title: descriptor.brief.title,
+            descriptor,
+            message: "AI requests are paused for this local QA server.",
+          });
+        }
+        return;
+      }
       const local = !options.runtimeError ? resultCache.current.get(descriptor.artifactId) : undefined;
       if (local) {
         saveToNotebook(descriptor);
@@ -164,10 +183,14 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
         });
       }
     },
-    [saveToNotebook, updateArtifactStatus],
+    [aiEnabled, saveToNotebook, updateArtifactStatus],
   );
 
   useEffect(() => {
+    if (!aiEnabled) {
+      setScanState("paused");
+      return;
+    }
     const controller = new AbortController();
     async function scan() {
       try {
@@ -192,7 +215,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
     }
     void scan();
     return () => controller.abort();
-  }, [requestArtifact, sourceDocument.sections, sourceDocument.targetUrl]);
+  }, [aiEnabled, requestArtifact, sourceDocument.sections, sourceDocument.targetUrl]);
 
   useEffect(() => {
     const key = notebookStorageKey(sourceDocument.targetUrl);
@@ -238,7 +261,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
 
   useEffect(() => {
     const article = articleRef.current;
-    if (!article) return;
+    if (!article || !aiEnabled) return;
     const cleanups: Array<() => void> = [];
 
     artifacts.forEach((artifact, index) => {
@@ -316,7 +339,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
       article.removeEventListener("mouseup", captureSelection);
       article.removeEventListener("keyup", captureSelection);
     };
-  }, [artifacts, sourceDocument.sections]);
+  }, [aiEnabled, artifacts, sourceDocument.sections]);
 
   useEffect(() => {
     const dismiss = () => setPrompt(null);
@@ -337,6 +360,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
 
   const scanSelection = useCallback(
     async (section: ScanSection) => {
+      if (!aiEnabled) return;
       setPrompt(null);
       restoreFocus.current = window.document.activeElement as HTMLElement | null;
       setView({
@@ -364,7 +388,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
         });
       }
     },
-    [openArtifact, sourceDocument.targetUrl],
+    [aiEnabled, openArtifact, sourceDocument.targetUrl],
   );
 
   const handleRuntimeFailure = useCallback(
@@ -413,6 +437,7 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
     [artifacts, prompt],
   );
   const articleMarkup = useMemo(() => ({ __html: sourceDocument.html }), [sourceDocument.html]);
+  const isArxivHtml = sourceDocument.siteName.startsWith("arXiv");
 
   const promptLabel = promptArtifact
     ? promptArtifact.status === "ready"
@@ -433,13 +458,19 @@ export function ReaderShell({ document: sourceDocument }: { document: IngestedDo
       </header>
 
       <main className="reader-grid">
-        <article className="paper-pane">
-          <header className="paper-meta">
-            <p>{sourceDocument.siteName}</p>
-            <h1>{sourceDocument.title}</h1>
-            {sourceDocument.byline ? <span>{sourceDocument.byline}</span> : null}
-          </header>
-          <div className="reader-article" ref={articleRef} dangerouslySetInnerHTML={articleMarkup} />
+        <article className={`paper-pane${isArxivHtml ? " is-arxiv" : ""}`}>
+          {!isArxivHtml ? (
+            <header className="paper-meta">
+              <p>{sourceDocument.siteName}</p>
+              <h1>{sourceDocument.title}</h1>
+              {sourceDocument.byline ? <span>{sourceDocument.byline}</span> : null}
+            </header>
+          ) : null}
+          <div
+            className={`reader-article${isArxivHtml ? " is-arxiv" : ""}`}
+            ref={articleRef}
+            dangerouslySetInnerHTML={articleMarkup}
+          />
         </article>
 
         <NotebookRail

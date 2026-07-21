@@ -19,6 +19,10 @@ export class IngestError extends Error {
   }
 }
 
+type SanitizeOptions = {
+  preserveLatexmlClasses?: boolean;
+};
+
 function errorDiagnostic(error: unknown): { name: string; message: string } {
   if (error instanceof Error) {
     return { name: error.name, message: error.message.slice(0, 500) };
@@ -53,7 +57,11 @@ function elementType(element: Element): ScanSection["elementType"] {
   return element.matches("p,li") ? "sentence" : "paragraph";
 }
 
-export function sanitizeAndIndex(html: string, baseUrl: string): { html: string; sections: ScanSection[]; title: string } {
+export function sanitizeAndIndex(
+  html: string,
+  baseUrl: string,
+  options: SanitizeOptions = {},
+): { html: string; sections: ScanSection[]; title: string } {
   const dom = new JSDOM(`<!doctype html><html><body>${html}</body></html>`, { url: baseUrl });
   const { document } = dom.window;
 
@@ -79,6 +87,15 @@ export function sanitizeAndIndex(html: string, baseUrl: string): { html: string;
       element.setAttribute("target", "_blank");
     }
   });
+
+  if (options.preserveLatexmlClasses) {
+    document.querySelectorAll("table").forEach((table) => {
+      const wrapper = document.createElement("div");
+      wrapper.className = "ltx_table_scroll";
+      table.parentElement?.insertBefore(wrapper, table);
+      wrapper.append(table);
+    });
+  }
 
   let index = 0;
   const sourceIds = new Map<string, string>();
@@ -118,37 +135,68 @@ export function sanitizeAndIndex(html: string, baseUrl: string): { html: string;
     });
   });
 
-  document.querySelectorAll("[class]").forEach((element) => element.removeAttribute("class"));
+  document.querySelectorAll("[class]").forEach((element) => {
+    if (!options.preserveLatexmlClasses) {
+      element.removeAttribute("class");
+      return;
+    }
+    const safeClasses = [...element.classList].filter((className) => /^ltx_[a-z0-9_-]+$/i.test(className));
+    if (safeClasses.length > 0) element.setAttribute("class", safeClasses.join(" "));
+    else element.removeAttribute("class");
+  });
 
   const title = document.querySelector("h1")?.textContent?.replace(/\s+/g, " ").trim() || "Untitled page";
   return { html: document.body.innerHTML, sections, title };
 }
 
 async function ingestArxiv(targetUrl: string, arxivId: string): Promise<IngestedDocument> {
-  try {
-    const sourceUrl = `https://ar5iv.labs.arxiv.org/html/${arxivId}`;
-    const { html, finalUrl } = await safeFetchHtml(sourceUrl);
-    if (new URL(finalUrl).hostname.toLowerCase() !== "ar5iv.labs.arxiv.org") {
-      throw new Error("ar5iv did not provide an HTML rendering");
+  const sources = [
+    {
+      url: `https://arxiv.org/html/${arxivId}`,
+      hosts: new Set(["arxiv.org", "www.arxiv.org"]),
+      pathPrefix: "/html/",
+      siteName: "arXiv · accessible HTML",
+    },
+    {
+      url: `https://ar5iv.labs.arxiv.org/html/${arxivId}`,
+      hosts: new Set(["ar5iv.labs.arxiv.org"]),
+      pathPrefix: "/html/",
+      siteName: "arXiv · ar5iv fallback",
+    },
+  ];
+  const failures: Array<{ source: string; error: { name: string; message: string } }> = [];
+
+  for (const source of sources) {
+    try {
+      const { html, finalUrl } = await safeFetchHtml(source.url);
+      const finalSourceUrl = new URL(finalUrl);
+      if (
+        !source.hosts.has(finalSourceUrl.hostname.toLowerCase()) ||
+        !finalSourceUrl.pathname.startsWith(source.pathPrefix)
+      ) {
+        throw new Error("The HTML source redirected outside its expected route.");
+      }
+      const sourceDom = new JSDOM(html, { url: finalUrl });
+      const article =
+        sourceDom.window.document.querySelector("article.ltx_document") ??
+        sourceDom.window.document.querySelector("article") ??
+        sourceDom.window.document.body;
+      const indexed = sanitizeAndIndex(article.outerHTML, finalUrl, { preserveLatexmlClasses: true });
+      if (indexed.sections.length === 0) throw new Error("No readable sections");
+      return {
+        targetUrl,
+        title: indexed.title,
+        siteName: source.siteName,
+        html: indexed.html,
+        sections: indexed.sections,
+      };
+    } catch (error) {
+      failures.push({ source: source.url, error: errorDiagnostic(error) });
     }
-    const sourceDom = new JSDOM(html, { url: sourceUrl });
-    const article = sourceDom.window.document.querySelector("article") ?? sourceDom.window.document.body;
-    const indexed = sanitizeAndIndex(article.innerHTML, sourceUrl);
-    if (indexed.sections.length === 0) throw new Error("No readable sections");
-    return {
-      targetUrl,
-      title: indexed.title,
-      siteName: "arXiv · ar5iv HTML",
-      html: indexed.html,
-      sections: indexed.sections,
-    };
-  } catch (error) {
-    console.error("arXiv ingest failed", {
-      arxivId,
-      error: errorDiagnostic(error),
-    });
-    throw new IngestError(ARXIV_ERROR);
   }
+
+  console.error("arXiv ingest failed", { arxivId, failures });
+  throw new IngestError(ARXIV_ERROR);
 }
 
 async function ingestReadablePage(targetUrl: string): Promise<IngestedDocument> {

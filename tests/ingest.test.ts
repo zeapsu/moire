@@ -31,6 +31,30 @@ describe("document sanitization and indexing", () => {
     expect(result.sections.some((section) => section.elementType === "equation")).toBe(true);
   });
 
+  it("retains only namespaced LaTeXML classes for arXiv layout parity", () => {
+    const result = sanitizeAndIndex(
+      `<article class="ltx_document hostile"><h1 class="ltx_title ltx_title_document app-shell">Paper</h1><div class="ltx_equation unsafe"><math><mi>x</mi></math> with enough explanatory text to scan.</div></article>`,
+      "https://arxiv.org/html/0000.00000",
+      { preserveLatexmlClasses: true },
+    );
+    expect(result.html).toContain('class="ltx_document"');
+    expect(result.html).toContain('class="ltx_title ltx_title_document"');
+    expect(result.html).toContain('class="ltx_equation"');
+    expect(result.html).not.toContain("hostile");
+    expect(result.html).not.toContain("app-shell");
+    expect(result.html).not.toContain("unsafe");
+  });
+
+  it("wraps intrinsic-width LaTeXML tables in a local scroll container", () => {
+    const result = sanitizeAndIndex(
+      `<article class="ltx_document"><h1 class="ltx_title">Table paper</h1><table class="ltx_tabular"><tbody><tr><td>One</td><td>Two</td></tr></tbody></table><p class="ltx_p">A sufficiently long explanation follows the table for scanner indexing.</p></article>`,
+      "https://arxiv.org/html/0000.00000",
+      { preserveLatexmlClasses: true },
+    );
+    expect(result.html).toContain('class="ltx_table_scroll"');
+    expect(result.html).toContain('class="ltx_tabular"');
+  });
+
   it("removes noscript reparsing payloads before browser insertion", () => {
     const result = sanitizeAndIndex(
       `<article><h1>Unsafe source</h1><noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript><p>This safe explanatory paragraph is long enough to become a visualization candidate.</p></article>`,
