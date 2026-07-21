@@ -3,6 +3,15 @@ import { getOpenAI } from "@/lib/openai";
 import { emptyRepairState, type ArtifactResult, type ArtifactValidation, type RepairStage, type RepairState, type VisualizationBrief } from "@/lib/types";
 
 export const THREE_JS_URL = "https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js";
+export const ARTIFACT_LAYOUT_VERSION = "1";
+export const ARTIFACT_RUNTIME_BRIDGE_VERSION = "3";
+export const ARTIFACT_LAYOUT_LIMITS = {
+  narrowMaxWidth: 720,
+  narrowStageRatio: 0.72,
+  wideStageRatio: 0.58,
+  minimumStageHeight: 300,
+  overflowTolerance: 2,
+} as const;
 const MAX_ARTIFACT_BYTES = 200 * 1024;
 const MAX_CONCURRENCY = 2;
 const MAX_QUEUE_DEPTH = 20;
@@ -10,6 +19,23 @@ const MAX_QUEUE_DEPTH = 20;
 export type ArtifactPriority = "interactive" | "prefetch";
 
 export class ArtifactQueueFullError extends Error {}
+
+export function shouldUseStageFirstFallback(metrics: {
+  viewportWidth: number;
+  stageWidth: number;
+  stageHeight: number;
+  scrollWidth: number;
+}): boolean {
+  const minimumRatio =
+    metrics.viewportWidth <= ARTIFACT_LAYOUT_LIMITS.narrowMaxWidth
+      ? ARTIFACT_LAYOUT_LIMITS.narrowStageRatio
+      : ARTIFACT_LAYOUT_LIMITS.wideStageRatio;
+  return (
+    metrics.stageWidth < metrics.viewportWidth * minimumRatio ||
+    metrics.stageHeight < ARTIFACT_LAYOUT_LIMITS.minimumStageHeight ||
+    metrics.scrollWidth > metrics.viewportWidth + ARTIFACT_LAYOUT_LIMITS.overflowTolerance
+  );
+}
 
 type QueueItem<T> = {
   task: () => Promise<T>;
@@ -101,6 +127,36 @@ function validateNetworkSurfaces(document: Document, render: "2d" | "3d", errors
   if (/@import\b/i.test(styleText)) errors.push("Artifact CSS may not use @import.");
 }
 
+function validateLayoutContract(document: Document, sliders: HTMLInputElement[], errors: string[]): void {
+  const layouts = [...document.querySelectorAll("[data-moire-layout]")];
+  const stages = [...document.querySelectorAll("[data-moire-stage]")];
+  const controls = [...document.querySelectorAll("[data-moire-controls]")];
+  const captions = [...document.querySelectorAll("[data-moire-caption]")];
+  const controlGroups = [...document.querySelectorAll("[data-moire-control]")];
+  if (layouts.length !== 1) errors.push("Artifact must contain exactly one data-moire-layout root.");
+  if (stages.length !== 1) errors.push("Artifact must contain exactly one data-moire-stage region.");
+  if (controls.length !== 1) errors.push("Artifact must contain exactly one data-moire-controls region.");
+  if (captions.length !== 1) errors.push("Artifact must contain exactly one data-moire-caption region.");
+  const layout = layouts[0];
+  if (layout && [...stages, ...controls, ...captions].some((region) => !layout.contains(region))) {
+    errors.push("Every Moiré artifact region must be contained by data-moire-layout.");
+  }
+  const controlsRegion = controls[0];
+  if (controlsRegion && sliders.some((slider) => !controlsRegion.contains(slider))) {
+    errors.push("Every parameter slider must be inside data-moire-controls.");
+  }
+  if (sliders.some((slider) => !slider.closest("[data-moire-control]"))) {
+    errors.push("Every parameter slider must be wrapped by data-moire-control.");
+  }
+  if (controlGroups.some((group) => !controlsRegion?.contains(group))) {
+    errors.push("Every data-moire-control group must be inside data-moire-controls.");
+  }
+  const duplicateTitles = [...document.querySelectorAll("h1")].filter(
+    (heading) => !heading.closest("[data-moire-chrome]"),
+  );
+  if (duplicateTitles.length > 0) errors.push("Artifact must not repeat the experiment title inside its content layout.");
+}
+
 export function validateArtifact(html: string, render: "2d" | "3d", expectedParameters = 1): ArtifactValidation {
   const errors: string[] = [];
   const bytes = Buffer.byteLength(html, "utf8");
@@ -115,6 +171,7 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   if (sliders.length < expectedParameters) {
     errors.push(`Artifact has ${sliders.length} parameter sliders; expected at least ${expectedParameters}.`);
   }
+  validateLayoutContract(document, sliders, errors);
   if (document.querySelector("iframe,object,embed,link,form,base,meta[http-equiv='refresh']")) {
     errors.push("Artifact contains a prohibited embedded or navigational element.");
   }
@@ -206,7 +263,10 @@ export function generatorInstructions(brief: VisualizationBrief): string {
   return [
     "Return exactly one complete self-contained HTML file beginning with <!doctype html>. Do not use Markdown fences or commentary.",
     "Use inline CSS and JavaScript. Make the visualization responsive, accessible, and legible on a dark canvas.",
-    "Keep controls and the visualization in normal document flow without fixed heights that clip content. Place controls beside the visualization when width allows and stack them at narrower widths; Moiré will size the inline frame to the resulting document height.",
+    "You own the artifact's visual expression and may choose a distinctive composition, typography, palette, motion, labels, and spatial metaphor that fit the paper concept. Avoid a generic dashboard or repeated card-grid feel.",
+    "Use exactly one data-moire-layout root containing exactly one data-moire-stage, one data-moire-controls, and one data-moire-caption region. Regions may be direct children or pass through a data-moire-support wrapper. Wrap every parameter control in data-moire-control. These attributes are semantic measurement hooks, not a prescribed visual style.",
+    "Prioritize the data-moire-stage in the visual hierarchy. At frame widths up to 720px it must occupy at least 72% of the viewport width; at wider sizes it must occupy at least 58%. It must be at least 300px tall, remain fully visible without horizontal overflow, and respond cleanly from 320px through 1200px widths. If these hard limits fail, Moiré applies a stage-first fallback layout.",
+    "Do not repeat the experiment title or add page navigation. Keep controls visually subordinate and keep the What you're seeing explanation concise, ideally under 80 words. Do not use fixed page heights that clip content.",
     "Create a labeled input[type=range] with a unique id for every supplied parameter. Reference every id in JavaScript and bind an input event listener to visible behavior.",
     "Include a concise paragraph labeled 'What you're seeing' that explains the behavior in plain language.",
     "Use only technical terminology found in anchor.text_excerpt, grounding_terms, governing_math, and parameter symbols. Ordinary interface words are allowed, but do not coin technical labels, metaphors, or domain claims.",
@@ -236,7 +296,7 @@ async function repairOnce(
 ): Promise<string> {
   const prior = new JSDOM(invalidHtml);
   prior.window.document
-    .querySelectorAll("meta[data-moire-csp],script[data-moire-runtime-bridge]")
+    .querySelectorAll("meta[data-moire-csp],script[data-moire-runtime-bridge],style[data-moire-layout-contract]")
     .forEach((element) => element.remove());
   const failureContext = stage === "validation" ? "server-side contract validation" : "browser execution";
   return callGenerator(
@@ -251,6 +311,7 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
     .querySelectorAll("meta[http-equiv]")
     .forEach((meta) => meta.getAttribute("http-equiv")?.toLowerCase() === "content-security-policy" && meta.remove());
   document.querySelectorAll("script[data-moire-runtime-bridge]").forEach((script) => script.remove());
+  document.querySelectorAll("style[data-moire-layout-contract]").forEach((style) => style.remove());
   const csp = document.createElement("meta");
   csp.setAttribute("data-moire-csp", "");
   csp.setAttribute("http-equiv", "Content-Security-Policy");
@@ -258,9 +319,13 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
     "content",
     `default-src 'none'; script-src 'unsafe-inline'${render === "3d" ? " https://cdn.jsdelivr.net" : ""}; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`,
   );
+  const layout = document.createElement("style");
+  layout.setAttribute("data-moire-layout-contract", ARTIFACT_LAYOUT_VERSION);
+  layout.textContent = `[data-moire-chrome]{display:none!important}[data-moire-layout],[data-moire-stage],[data-moire-controls],[data-moire-caption]{max-width:100%}[data-moire-stage]{min-width:0}html[data-moire-layout-fallback="stage-first"],html[data-moire-layout-fallback="stage-first"] body{min-height:0!important}html[data-moire-layout-fallback="stage-first"] body{margin:0!important;padding:0!important;overflow-x:hidden!important}html[data-moire-layout-fallback="stage-first"] [data-moire-layout]{display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-areas:"stage" "controls" "caption"!important;gap:12px!important;width:100%!important;max-width:none!important;min-height:0!important;margin:0!important;padding:12px!important}html[data-moire-layout-fallback="stage-first"] [data-moire-support]{display:contents!important}html[data-moire-layout-fallback="stage-first"] [data-moire-stage]{grid-area:stage!important;width:100%!important;min-width:0!important;height:clamp(380px,68vw,560px)!important;min-height:clamp(380px,68vw,560px)!important;margin:0!important}html[data-moire-layout-fallback="stage-first"] [data-moire-stage]>canvas,html[data-moire-layout-fallback="stage-first"] [data-moire-stage]>svg,html[data-moire-layout-fallback="stage-first"] [data-moire-stage]>[data-moire-viewport]{display:block!important;width:100%!important;height:100%!important;min-height:0!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]{grid-area:controls!important;display:grid!important;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))!important;gap:8px!important;width:100%!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>h1,html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>h2,html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>h3{display:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-control]{min-width:0!important;margin:0!important;padding:10px!important;border:1px solid rgba(255,255,255,.1)!important;border-radius:8px!important;background:rgba(255,255,255,.035)!important;box-shadow:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-control] input[type=range]{width:100%!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>.hint,html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>[data-moire-hint]{grid-column:1/-1!important;margin:0!important;padding:0 2px!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]{grid-area:caption!important;display:grid!important;grid-template-columns:auto minmax(0,1fr)!important;align-items:baseline!important;gap:12px!important;width:100%!important;margin:0!important;padding:8px 2px 0!important;border:0!important;border-top:1px solid rgba(255,255,255,.08)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>h1,html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>h2,html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>h3{margin:0!important;font-size:11px!important;line-height:1.4!important;letter-spacing:.08em!important;text-transform:uppercase!important;white-space:nowrap!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>p{margin:0!important;max-width:none!important;font-size:13px!important;line-height:1.45!important}@media(max-width:420px){html[data-moire-layout-fallback="stage-first"] [data-moire-layout]{padding:8px!important}html[data-moire-layout-fallback="stage-first"] [data-moire-stage]{height:clamp(300px,82vw,380px)!important;min-height:clamp(300px,82vw,380px)!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]{grid-template-columns:1fr!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]{grid-template-columns:1fr!important;gap:4px!important}}`;
   const bridge = document.createElement("script");
-  bridge.setAttribute("data-moire-runtime-bridge", "2");
-  bridge.textContent = `(()=>{const send=(kind,detail={})=>window.parent.postMessage({moire:kind,...detail},'*');let lastHeight=0;const measure=()=>{const height=Math.ceil(Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0));if(height>0&&Math.abs(height-lastHeight)>1){lastHeight=height;send('resize',{height})}};const observe=()=>{measure();if('ResizeObserver'in window){const observer=new ResizeObserver(measure);observer.observe(document.documentElement);if(document.body)observer.observe(document.body);window.addEventListener('pagehide',()=>observer.disconnect(),{once:true})}window.addEventListener('load',measure,{once:true});requestAnimationFrame(measure)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',observe,{once:true});else observe();window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>send('runtime-error',{message:String(event.message||'Artifact runtime error').slice(0,500)}));window.addEventListener('unhandledrejection',(event)=>send('runtime-error',{message:String(event.reason||'Unhandled artifact rejection').slice(0,500)}))})();`;
+  bridge.setAttribute("data-moire-runtime-bridge", ARTIFACT_RUNTIME_BRIDGE_VERSION);
+  bridge.textContent = `(()=>{const send=(kind,detail={})=>window.parent.postMessage({moire:kind,...detail},'*');let lastHeight=0;const enforceLayout=()=>{const root=document.documentElement;if(root.dataset.moireLayoutFallback)return;const stage=document.querySelector('[data-moire-stage]');if(!stage)return;const viewport=Math.max(root.clientWidth||0,window.innerWidth||0);const rect=stage.getBoundingClientRect();const minimumRatio=viewport<=${ARTIFACT_LAYOUT_LIMITS.narrowMaxWidth}?${ARTIFACT_LAYOUT_LIMITS.narrowStageRatio}:${ARTIFACT_LAYOUT_LIMITS.wideStageRatio};const overflows=root.scrollWidth>viewport+${ARTIFACT_LAYOUT_LIMITS.overflowTolerance};if(rect.width<viewport*minimumRatio||rect.height<${ARTIFACT_LAYOUT_LIMITS.minimumStageHeight}||overflows)root.dataset.moireLayoutFallback='stage-first'};const measure=()=>{enforceLayout();const height=Math.ceil(Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0));if(height>0&&Math.abs(height-lastHeight)>1){lastHeight=height;send('resize',{height})}};const observe=()=>{measure();if('ResizeObserver'in window){const observer=new ResizeObserver(measure);observer.observe(document.documentElement);if(document.body)observer.observe(document.body);window.addEventListener('pagehide',()=>observer.disconnect(),{once:true})}window.addEventListener('load',measure,{once:true});requestAnimationFrame(measure)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',observe,{once:true});else observe();window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>send('runtime-error',{message:String(event.message||'Artifact runtime error').slice(0,500)}));window.addEventListener('unhandledrejection',(event)=>send('runtime-error',{message:String(event.reason||'Unhandled artifact rejection').slice(0,500)}))})();`;
+  document.head.append(layout);
   document.head.prepend(bridge);
   document.head.prepend(csp);
   return `<!doctype html>\n${document.documentElement.outerHTML}`;

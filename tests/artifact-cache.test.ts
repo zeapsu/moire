@@ -24,6 +24,7 @@ vi.mock("@vercel/functions", () => ({
 vi.mock("next/cache", () => ({ unstable_cache: (work: unknown) => work }));
 
 vi.mock("@/lib/artifact", () => ({
+  ARTIFACT_RUNTIME_BRIDGE_VERSION: "3",
   ArtifactQueueFullError: class ArtifactQueueFullError extends Error {},
   generateArtifact: generateArtifactMock,
   promoteArtifactTask: promoteArtifactTaskMock,

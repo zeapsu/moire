@@ -23,7 +23,7 @@ const brief: VisualizationBrief = {
   score: 0.9,
 };
 
-const validArtifact = `<!doctype html><html><head><style>body{color:white}</style></head><body><label>Speed<input id="speed" type="range"></label><p>What you're seeing: speed changes the plot.</p><script>document.getElementById('speed').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
+const validArtifact = `<!doctype html><html><head><style>body{color:white}</style></head><body><main data-moire-layout><section data-moire-stage><canvas></canvas></section><section data-moire-controls><label data-moire-control>Speed<input id="speed" type="range"></label></section><section data-moire-caption><p>What you're seeing: speed changes the plot.</p></section></main><script>document.getElementById('speed').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
 const invalidArtifact = "<html><body>invalid</body></html>";
 
 describe("stage-specific artifact repair policy", () => {

@@ -64,9 +64,10 @@ describe("curated demo registry", () => {
     const seeded = seededArtifactsFor("https://arxiv.org/abs/2308.04079", source);
     expect(seeded?.[0].brief).toMatchObject({ viz_kind: "3d-scene", render: "3d" });
     expect(seeded?.[0].html).toContain("three@0.181.2");
-    expect(seeded?.[0].html).toContain("@media (max-width: 560px)");
-    expect(seeded?.[0].html).toContain("@media (max-width: 520px)");
-    expect(seeded?.[0].html).not.toContain("@media (max-width: 820px)");
+    expect(seeded?.[0].html).toContain("data-moire-layout");
+    expect(seeded?.[0].html).toContain("data-moire-stage");
+    expect(seeded?.[0].html).toContain("data-moire-controls");
+    expect(seeded?.[0].html).toContain("data-moire-caption");
     expect(seeded?.[0].html).not.toContain("data-moire-runtime-bridge");
   });
 

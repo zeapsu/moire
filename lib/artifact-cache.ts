@@ -3,6 +3,7 @@ import { getCache } from "@vercel/functions";
 import { unstable_cache } from "next/cache";
 import {
   ArtifactQueueFullError,
+  ARTIFACT_RUNTIME_BRIDGE_VERSION,
   generateArtifact,
   promoteArtifactTask,
   repairRuntimeFailure,
@@ -207,7 +208,7 @@ function withServerRepairState(result: ArtifactResult, repairState: RepairState)
 }
 
 function envelope(record: ArtifactRecord, result: ArtifactResult, cached: boolean): CachedArtifactResult {
-  if (result.ok && !result.html.includes('data-moire-runtime-bridge="2"')) {
+  if (result.ok && !result.html.includes(`data-moire-runtime-bridge="${ARTIFACT_RUNTIME_BRIDGE_VERSION}"`)) {
     const html = withArtifactCsp(result.html, record.brief.render);
     if (record.result?.ok && record.result.html === result.html) record.result = { ...record.result, html };
     return { ...result, html, artifactId: record.artifactId, cached };

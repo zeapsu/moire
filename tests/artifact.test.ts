@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { generatorInstructions, THREE_JS_URL, validateArtifact, withArtifactCsp } from "@/lib/artifact";
+import {
+  generatorInstructions,
+  shouldUseStageFirstFallback,
+  THREE_JS_URL,
+  validateArtifact,
+  withArtifactCsp,
+} from "@/lib/artifact";
 import type { VisualizationBrief } from "@/lib/types";
 
-const valid2d = `<!doctype html><html><head><style>body{color:white}</style></head><body><label>Speed<input id="speed" type="range" min="0" max="1"></label><canvas></canvas><p>What you're seeing: speed changes the motion.</p><script>document.getElementById('speed').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
+const valid2d = `<!doctype html><html><head><style>body{color:white}</style></head><body><main data-moire-layout><section data-moire-stage><canvas></canvas></section><section data-moire-controls><label data-moire-control>Speed<input id="speed" type="range" min="0" max="1"></label></section><section data-moire-caption><p>What you're seeing: speed changes the motion.</p></section></main><script>document.getElementById('speed').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
 
 describe("artifact validation", () => {
   const brief = {
@@ -30,8 +36,9 @@ describe("artifact validation", () => {
     expect(instructions).toContain("pagehide");
     expect(instructions).toContain("pointer drag");
     expect(instructions).toContain("first complete frame");
-    expect(instructions).toContain("normal document flow");
-    expect(instructions).toContain("controls beside the visualization");
+    expect(instructions).toContain("visual expression");
+    expect(instructions).toContain("at least 72%");
+    expect(instructions).toContain("stage-first fallback");
   });
 
   it("keeps Three.js out of the 2D generation contract", () => {
@@ -48,6 +55,39 @@ describe("artifact validation", () => {
     const result = validateArtifact(valid2d, "2d", 2);
     expect(result.ok).toBe(false);
     expect(result.errors.join(" ")).toContain("expected at least 2");
+  });
+
+  it("requires semantic layout hooks without prescribing the artifact style", () => {
+    for (const attribute of ["data-moire-layout", "data-moire-stage", "data-moire-controls", "data-moire-caption"]) {
+      const result = validateArtifact(valid2d.replace(attribute, `data-missing-${attribute}`), "2d");
+      expect(result.ok, attribute).toBe(false);
+      expect(result.errors.join(" "), attribute).toContain(attribute);
+    }
+    expect(
+      validateArtifact(valid2d.replace("data-moire-control>", "data-missing-control>"), "2d").errors.join(" "),
+    ).toContain("data-moire-control");
+  });
+
+  it.each([
+    ["narrow full-width stage", false, { viewportWidth: 600, stageWidth: 432, stageHeight: 300, scrollWidth: 602 }],
+    ["creative wide composition", false, { viewportWidth: 1_000, stageWidth: 580, stageHeight: 420, scrollWidth: 1_002 }],
+    ["cramped narrow stage", true, { viewportWidth: 600, stageWidth: 280, stageHeight: 500, scrollWidth: 600 }],
+    ["short stage", true, { viewportWidth: 600, stageWidth: 560, stageHeight: 299, scrollWidth: 600 }],
+    ["horizontal overflow", true, { viewportWidth: 600, stageWidth: 560, stageHeight: 400, scrollWidth: 603 }],
+  ])("uses the stage-first fallback for %s only when hard limits fail", (_name, expected, metrics) => {
+    expect(shouldUseStageFirstFallback(metrics)).toBe(expected);
+  });
+
+  it("rejects duplicate regions, controls outside their region, and repeated artifact titles", () => {
+    const duplicateStage = valid2d.replace("</main>", "<section data-moire-stage></section></main>");
+    const outsideControls = valid2d.replace(
+      '<label data-moire-control>Speed<input id="speed" type="range" min="0" max="1"></label>',
+      "",
+    ).replace("</main>", '<label data-moire-control>Speed<input id="speed" type="range" min="0" max="1"></label></main>');
+    const duplicateTitle = valid2d.replace("<canvas></canvas>", "<h1>Repeated title</h1><canvas></canvas>");
+    expect(validateArtifact(duplicateStage, "2d").errors.join(" ")).toContain("exactly one data-moire-stage");
+    expect(validateArtifact(outsideControls, "2d").errors.join(" ")).toContain("inside data-moire-controls");
+    expect(validateArtifact(duplicateTitle, "2d").errors.join(" ")).toContain("must not repeat");
   });
 
   it("rejects network access and a missing ready handshake", () => {
@@ -84,7 +124,7 @@ describe("artifact validation", () => {
   });
 
   it("allows only the pinned three.js import in a 3D artifact", () => {
-    const html = `<!doctype html><html><head><script type="importmap">{"imports":{"three":"${THREE_JS_URL}"}}</script></head><body><input id="depth" type="range"><p>What you're seeing: depth changes the scene.</p><script type="module">import * as THREE from 'three'; document.getElementById('depth').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
+    const html = `<!doctype html><html><head><script type="importmap">{"imports":{"three":"${THREE_JS_URL}"}}</script></head><body><main data-moire-layout><section data-moire-stage><div id="scene"></div></section><section data-moire-controls><label data-moire-control>Depth<input id="depth" type="range"></label></section><section data-moire-caption><p>What you're seeing: depth changes the scene.</p></section></main><script type="module">import * as THREE from 'three'; document.getElementById('depth').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
     expect(validateArtifact(html, "3d").ok).toBe(true);
     expect(validateArtifact(html.replace(THREE_JS_URL, "https://evil.example/three.js"), "3d").ok).toBe(false);
   });
@@ -94,10 +134,13 @@ describe("artifact validation", () => {
     expect(secured).toContain("Content-Security-Policy");
     expect(secured).toContain("default-src 'none'");
     expect(secured).toContain("connect-src 'none'");
-    expect(secured).toContain('data-moire-runtime-bridge="2"');
+    expect(secured).toContain('data-moire-runtime-bridge="3"');
+    expect(secured).toContain('data-moire-layout-contract="1"');
     expect(secured).toContain("ResizeObserver");
     expect(secured).toContain("send('resize',{height})");
+    expect(secured).toContain("moireLayoutFallback='stage-first'");
     expect(withArtifactCsp(secured, "2d").match(/data-moire-runtime-bridge/g)).toHaveLength(1);
+    expect(withArtifactCsp(secured, "2d").match(/data-moire-layout-contract/g)).toHaveLength(1);
   });
 
   it("does not mistake JavaScript comments, prose, or local location variables for network access", () => {
