@@ -9,7 +9,7 @@ const { generateArtifactMock, repairRuntimeFailureMock } = vi.hoisted(() => ({
 vi.mock("@/lib/artifact", () => {
   class ArtifactQueueFullError extends Error {}
   return {
-    ARTIFACT_RUNTIME_BRIDGE_VERSION: "3",
+    ARTIFACT_RUNTIME_BRIDGE_VERSION: "4",
     ArtifactQueueFullError,
     generateArtifact: generateArtifactMock,
     promoteArtifactTask: vi.fn(),

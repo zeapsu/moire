@@ -138,10 +138,12 @@ describe("artifact validation", () => {
     expect(secured).toContain("Content-Security-Policy");
     expect(secured).toContain("default-src 'none'");
     expect(secured).toContain("connect-src 'none'");
-    expect(secured).toContain('data-moire-runtime-bridge="3"');
+    expect(secured).toContain('data-moire-runtime-bridge="4"');
     expect(secured).toContain('data-moire-layout-contract="1"');
     expect(secured).toContain("ResizeObserver");
     expect(secured).toContain("send('resize',{height})");
+    expect(secured).toContain("layoutReady=true");
+    expect(secured).toContain("wrapper.setAttribute('data-moire-support','')");
     expect(secured).toContain("moireLayoutFallback='stage-first'");
     expect(withArtifactCsp(secured, "2d").match(/data-moire-runtime-bridge/g)).toHaveLength(1);
     expect(withArtifactCsp(secured, "2d").match(/data-moire-layout-contract/g)).toHaveLength(1);
