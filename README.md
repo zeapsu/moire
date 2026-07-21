@@ -4,6 +4,8 @@ Moiré turns readable research papers and educational pages into interactive exp
 
 **Live app:** https://moire-umber.vercel.app
 
+**Demo video:** https://youtu.be/WFX1l93bmEo
+
 ## Try the seeded demo
 
 - [Attention Is All You Need](https://moire-umber.vercel.app/1706.03762) — three instant views for scaled dot-product attention, multi-head attention, and positional encoding.
