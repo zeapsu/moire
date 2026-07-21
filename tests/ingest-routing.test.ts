@@ -17,17 +17,32 @@ afterEach(() => {
 });
 
 describe("arXiv ingest routing", () => {
-  it("routes legacy identifiers through ar5iv but rejects an abstract-page fallback", async () => {
-    safeFetchHtml.mockResolvedValueOnce({
-      html: "<!doctype html><html><body><article><p>Only an abstract page.</p></article></body></html>",
-      finalUrl: "https://arxiv.org/abs/hep-th/9901001",
-    });
+  it("tries both HTML sources for legacy identifiers but rejects abstract-page fallbacks", async () => {
+    safeFetchHtml
+      .mockResolvedValueOnce({
+        html: "<!doctype html><html><body><article><p>Only an abstract page.</p></article></body></html>",
+        finalUrl: "https://arxiv.org/abs/hep-th/9901001",
+      })
+      .mockResolvedValueOnce({
+        html: "<!doctype html><html><body><article><p>Only an abstract page.</p></article></body></html>",
+        finalUrl: "https://arxiv.org/abs/hep-th/9901001",
+      });
 
     await expect(ingestTarget("https://arxiv.org/abs/hep-th/9901001")).rejects.toThrow(ARXIV_ERROR);
-    expect(safeFetchHtml).toHaveBeenCalledWith("https://ar5iv.labs.arxiv.org/html/hep-th/9901001");
+    expect(safeFetchHtml).toHaveBeenNthCalledWith(1, "https://arxiv.org/html/hep-th/9901001");
+    expect(safeFetchHtml).toHaveBeenNthCalledWith(2, "https://ar5iv.labs.arxiv.org/html/hep-th/9901001");
     expect(consoleError).toHaveBeenCalledWith("arXiv ingest failed", {
       arxivId: "hep-th/9901001",
-      error: { name: "Error", message: "ar5iv did not provide an HTML rendering" },
+      failures: [
+        {
+          source: "https://arxiv.org/html/hep-th/9901001",
+          error: { name: "Error", message: "The HTML source redirected outside its expected route." },
+        },
+        {
+          source: "https://ar5iv.labs.arxiv.org/html/hep-th/9901001",
+          error: { name: "Error", message: "The HTML source redirected outside its expected route." },
+        },
+      ],
     });
   });
 

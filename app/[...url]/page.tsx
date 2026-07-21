@@ -27,7 +27,7 @@ export default async function PrefixReaderPage({ params, searchParams }: PagePro
   try {
     const targetUrl = normalizeTarget(rawTarget);
     const document = await ingestTarget(targetUrl);
-    return <ReaderShell document={document} />;
+    return <ReaderShell document={document} aiEnabled={process.env.MOIRE_QA_NO_AI !== "1"} />;
   } catch (error) {
     const message =
       error instanceof IngestError || error instanceof TargetError ? error.message : "This page could not be opened.";

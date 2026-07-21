@@ -58,6 +58,8 @@ describe("artifact validation", () => {
     expect(secured).toContain("Content-Security-Policy");
     expect(secured).toContain("default-src 'none'");
     expect(secured).toContain("connect-src 'none'");
+    expect(secured).toContain("data-moire-runtime-bridge");
+    expect(withArtifactCsp(secured, "2d").match(/data-moire-runtime-bridge/g)).toHaveLength(1);
   });
 
   it("does not mistake JavaScript comments, prose, or local location variables for network access", () => {

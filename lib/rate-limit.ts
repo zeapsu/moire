@@ -33,3 +33,7 @@ export function takeRateLimit(key: string, limit: number, windowMs: number): { a
   existing.count += 1;
   return { allowed: true, retryAfter: 0 };
 }
+
+export function resetRateLimitsForTests(): void {
+  windows.clear();
+}

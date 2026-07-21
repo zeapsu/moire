@@ -1,60 +1,74 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { ArtifactQueueFullError, generateArtifact, repairRuntimeFailure } from "@/lib/artifact";
-import { briefSchema, emptyRepairState, repairStateSchema } from "@/lib/types";
+import { ArtifactQueueFullError } from "@/lib/artifact";
+import {
+  ArtifactNotFoundError,
+  ArtifactNotReadyError,
+  generateCachedArtifact,
+  repairCachedArtifact,
+} from "@/lib/artifact-cache";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
+import { OpenAIConfigurationError } from "@/lib/openai";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 const requestSchema = z
   .object({
-    brief: briefSchema,
-    previousHtml: z.string().max(200 * 1024).optional(),
+    artifactId: z.string().uuid(),
+    intent: z.enum(["interactive", "prefetch"]).default("interactive"),
     runtimeError: z.string().min(1).max(500).optional(),
-    repairState: repairStateSchema.optional(),
   })
-  .strict()
-  .refine(
-    (value) =>
-      [value.previousHtml, value.runtimeError, value.repairState].every(Boolean) ||
-      [value.previousHtml, value.runtimeError, value.repairState].every((item) => !item),
-    { message: "Runtime repair requires the prior artifact, its error, and repair state." },
-  );
+  .strict();
 
 export async function POST(request: Request) {
-  let responseRepairState = emptyRepairState();
   try {
-    const rate = takeRateLimit(`generate:${clientAddress(request)}`, 12, 10 * 60_000);
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return NextResponse.json({ error: "The visualization request is invalid." }, { status: 400 });
+    }
+    const parsed = requestSchema.safeParse(body);
+    if (!parsed.success) return NextResponse.json({ error: "The visualization request is invalid." }, { status: 400 });
+
+    const { artifactId, intent, runtimeError } = parsed.data;
+    const bucket = intent === "prefetch" && !runtimeError ? "prefetch" : "interactive";
+    const rate = takeRateLimit(
+      `generate:${bucket}:${clientAddress(request)}`,
+      bucket === "prefetch" ? 6 : 12,
+      10 * 60_000,
+    );
     if (!rate.allowed) {
       return NextResponse.json(
-        { ok: false, error: "Too many visualization requests. Try again shortly.", repairState: emptyRepairState() },
+        { ok: false, error: "Too many visualization requests. Try again shortly." },
         { status: 429, headers: { "retry-after": String(rate.retryAfter) } },
       );
     }
-    const parsed = requestSchema.safeParse(await request.json());
-    if (!parsed.success) return NextResponse.json({ error: "The visualization brief is invalid." }, { status: 400 });
-
-    const { brief, previousHtml, runtimeError, repairState } = parsed.data;
-    if (repairState && runtimeError) {
-      responseRepairState = { ...repairState, lastFailure: { stage: "runtime", message: runtimeError } };
-    }
-    const result =
-      previousHtml && runtimeError && repairState
-        ? await repairRuntimeFailure(brief, previousHtml, runtimeError, repairState)
-        : await generateArtifact(brief);
+    const result = runtimeError
+      ? await repairCachedArtifact(artifactId, runtimeError)
+      : await generateCachedArtifact(artifactId, intent);
 
     return NextResponse.json(result, { status: result.ok ? 200 : 422 });
   } catch (error) {
     console.error("Artifact generation failed", error);
+    if (error instanceof ArtifactNotFoundError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 404 });
+    }
+    if (error instanceof ArtifactNotReadyError) {
+      return NextResponse.json({ ok: false, error: error.message }, { status: 409 });
+    }
     if (error instanceof ArtifactQueueFullError) {
       return NextResponse.json(
-        { ok: false, error: error.message, repairState: responseRepairState },
+        { ok: false, error: error.message },
         { status: 503, headers: { "retry-after": "15" } },
       );
     }
+    if (error instanceof OpenAIConfigurationError) {
+      return NextResponse.json({ ok: false, error: "Moiré is missing its OpenAI API key." }, { status: 500 });
+    }
     return NextResponse.json(
-      { ok: false, error: error instanceof Error && error.message.includes("OPENAI_API_KEY") ? "Moiré is missing its OpenAI API key." : "The visualization could not be generated.", repairState: responseRepairState },
+      { ok: false, error: "The visualization could not be generated." },
       { status: 500 },
     );
   }

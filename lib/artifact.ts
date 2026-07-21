@@ -7,20 +7,25 @@ const MAX_ARTIFACT_BYTES = 200 * 1024;
 const MAX_CONCURRENCY = 2;
 const MAX_QUEUE_DEPTH = 20;
 
+export type ArtifactPriority = "interactive" | "prefetch";
+
 export class ArtifactQueueFullError extends Error {}
 
 type QueueItem<T> = {
   task: () => Promise<T>;
+  priority: ArtifactPriority;
+  key?: string;
   resolve: (value: T) => void;
   reject: (reason: unknown) => void;
 };
 
-const queue: QueueItem<unknown>[] = [];
+const interactiveQueue: QueueItem<unknown>[] = [];
+const prefetchQueue: QueueItem<unknown>[] = [];
 let active = 0;
 
 function drainQueue(): void {
-  while (active < MAX_CONCURRENCY && queue.length > 0) {
-    const item = queue.shift();
+  while (active < MAX_CONCURRENCY && interactiveQueue.length + prefetchQueue.length > 0) {
+    const item = interactiveQueue.shift() ?? prefetchQueue.shift();
     if (!item) return;
     active += 1;
     item
@@ -33,12 +38,26 @@ function drainQueue(): void {
   }
 }
 
-export function runArtifactTask<T>(task: () => Promise<T>): Promise<T> {
-  if (queue.length >= MAX_QUEUE_DEPTH) {
+export function promoteArtifactTask(key: string): boolean {
+  const index = prefetchQueue.findIndex((item) => item.key === key);
+  if (index < 0) return false;
+  const [item] = prefetchQueue.splice(index, 1);
+  item.priority = "interactive";
+  interactiveQueue.push(item);
+  return true;
+}
+
+export function runArtifactTask<T>(
+  task: () => Promise<T>,
+  priority: ArtifactPriority = "interactive",
+  key?: string,
+): Promise<T> {
+  if (interactiveQueue.length + prefetchQueue.length >= MAX_QUEUE_DEPTH) {
     return Promise.reject(new ArtifactQueueFullError("The visualization queue is full. Try again shortly."));
   }
   return new Promise<T>((resolve, reject) => {
-    queue.push({ task, resolve: resolve as (value: unknown) => void, reject });
+    const queue = priority === "interactive" ? interactiveQueue : prefetchQueue;
+    queue.push({ task, priority, key, resolve: resolve as (value: unknown) => void, reject });
     drainQueue();
   });
 }
@@ -206,7 +225,9 @@ async function repairOnce(
   errors: string[],
 ): Promise<string> {
   const prior = new JSDOM(invalidHtml);
-  prior.window.document.querySelectorAll("meta[data-moire-csp]").forEach((meta) => meta.remove());
+  prior.window.document
+    .querySelectorAll("meta[data-moire-csp],script[data-moire-runtime-bridge]")
+    .forEach((element) => element.remove());
   const failureContext = stage === "validation" ? "server-side contract validation" : "browser execution";
   return callGenerator(
     `${generatorInstructions(brief)}\n\nThe prior attempt below failed ${failureContext}. Repair it and return a full replacement HTML file.\n${stage === "validation" ? "Validation" : "Runtime"} diagnostics:\n- ${errors.join("\n- ")}\n<invalid_artifact>\n${prior.serialize()}\n</invalid_artifact>`,
@@ -219,6 +240,7 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
   document
     .querySelectorAll("meta[http-equiv]")
     .forEach((meta) => meta.getAttribute("http-equiv")?.toLowerCase() === "content-security-policy" && meta.remove());
+  document.querySelectorAll("script[data-moire-runtime-bridge]").forEach((script) => script.remove());
   const csp = document.createElement("meta");
   csp.setAttribute("data-moire-csp", "");
   csp.setAttribute("http-equiv", "Content-Security-Policy");
@@ -226,6 +248,10 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
     "content",
     `default-src 'none'; script-src 'unsafe-inline'${render === "3d" ? " https://cdn.jsdelivr.net" : ""}; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`,
   );
+  const bridge = document.createElement("script");
+  bridge.setAttribute("data-moire-runtime-bridge", "");
+  bridge.textContent = `(()=>{const send=(kind,message)=>window.parent.postMessage({moire:kind,message},'*');window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>send('runtime-error',String(event.message||'Artifact runtime error').slice(0,500)));window.addEventListener('unhandledrejection',(event)=>send('runtime-error',String(event.reason||'Unhandled artifact rejection').slice(0,500)))})();`;
+  document.head.prepend(bridge);
   document.head.prepend(csp);
   return `<!doctype html>\n${document.documentElement.outerHTML}`;
 }
@@ -263,7 +289,11 @@ function successfulArtifact(html: string, render: "2d" | "3d", repairState: Repa
   return { ok: true, html: secured, repairState };
 }
 
-export async function generateArtifact(brief: VisualizationBrief): Promise<ArtifactResult> {
+export async function generateArtifact(
+  brief: VisualizationBrief,
+  priority: ArtifactPriority = "interactive",
+  queueKey?: string,
+): Promise<ArtifactResult> {
   return runArtifactTask(async () => {
     const initialState = emptyRepairState();
     const initial = await callGenerator(generatorInstructions(brief));
@@ -283,7 +313,7 @@ export async function generateArtifact(brief: VisualizationBrief): Promise<Artif
       error: `The visualization failed its safety checks after one repair: ${repairedValidation.errors.join(" ")}`,
       repairState: terminalState,
     };
-  });
+  }, priority, queueKey);
 }
 
 export async function repairRuntimeFailure(

@@ -93,3 +93,18 @@ export function emptyRepairState(): RepairState {
 export type ArtifactResult =
   | { ok: true; html: string; repairState: RepairState }
   | { ok: false; error: string; repairState: RepairState };
+
+export type ArtifactStatus = "idle" | "generating" | "ready" | "repairing" | "error";
+export type ArtifactKind = "page" | "selection";
+
+export type ArtifactDescriptor = {
+  artifactId: string;
+  status: ArtifactStatus;
+  kind: ArtifactKind;
+  brief: VisualizationBrief;
+};
+
+export type CachedArtifactResult = ArtifactResult & {
+  artifactId: string;
+  cached: boolean;
+};
