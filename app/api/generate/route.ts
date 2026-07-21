@@ -8,7 +8,7 @@ import {
   repairCachedArtifact,
 } from "@/lib/artifact-cache";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
-import { OpenAIConfigurationError } from "@/lib/openai";
+import { ModelGatewayConfigurationError } from "@/lib/model-gateway";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -64,8 +64,8 @@ export async function POST(request: Request) {
         { status: 503, headers: { "retry-after": "15" } },
       );
     }
-    if (error instanceof OpenAIConfigurationError) {
-      return NextResponse.json({ ok: false, error: "Moiré is missing its OpenAI API key." }, { status: 500 });
+    if (error instanceof ModelGatewayConfigurationError) {
+      return NextResponse.json({ ok: false, error: "Moiré is missing its OpenRouter API key." }, { status: 500 });
     }
     return NextResponse.json(
       { ok: false, error: "The visualization could not be generated." },

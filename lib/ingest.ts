@@ -76,7 +76,7 @@ function sectionLabel(element: Element): string {
     sibling = sibling.previousElementSibling;
   }
   const parentHeading = element.parentElement?.querySelector(":scope > h1, :scope > h2, :scope > h3, :scope > h4");
-  return parentHeading?.textContent?.trim().slice(0, 120) || "Paper";
+  return parentHeading?.textContent?.trim().slice(0, 120) || "Source";
 }
 
 function elementType(element: Element): ScanSection["elementType"] {

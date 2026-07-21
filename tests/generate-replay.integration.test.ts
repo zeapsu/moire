@@ -9,10 +9,12 @@ const { generateArtifactMock, repairRuntimeFailureMock } = vi.hoisted(() => ({
 vi.mock("@/lib/artifact", () => {
   class ArtifactQueueFullError extends Error {}
   return {
+    ARTIFACT_RUNTIME_BRIDGE_VERSION: "5",
     ArtifactQueueFullError,
     generateArtifact: generateArtifactMock,
     promoteArtifactTask: vi.fn(),
     repairRuntimeFailure: repairRuntimeFailureMock,
+    withArtifactCsp: (html: string) => html,
   };
 });
 
@@ -29,6 +31,8 @@ const brief: VisualizationBrief = {
   viz_kind: "interactive-plot",
   render: "2d",
   governing_math: "x",
+  grounding_terms: ["passage"],
+  references: [],
   parameters: [{ name: "Speed", symbol: "v", default: 1, min: 0, max: 2, unit: "m/s" }],
   expected_behavior: "The plot responds to speed.",
   score: 0.9,

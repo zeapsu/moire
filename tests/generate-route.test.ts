@@ -18,7 +18,7 @@ vi.mock("@/lib/artifact-cache", () => {
 });
 
 import { POST } from "@/app/api/generate/route";
-import { OpenAIConfigurationError } from "@/lib/openai";
+import { ModelGatewayConfigurationError } from "@/lib/model-gateway";
 import { resetRateLimitsForTests } from "@/lib/rate-limit";
 
 const artifactId = "9ba8fd67-b0bb-445d-8a8e-803f2fb38079";
@@ -121,7 +121,7 @@ describe("artifact generation route", () => {
   });
 
   it("maps the typed missing-key error without relying on message text", async () => {
-    generateCachedArtifact.mockRejectedValueOnce(new OpenAIConfigurationError("configuration unavailable"));
+    generateCachedArtifact.mockRejectedValueOnce(new ModelGatewayConfigurationError("configuration unavailable"));
     const response = await POST(
       new Request("https://moire.test/api/generate", {
         method: "POST",
@@ -131,6 +131,6 @@ describe("artifact generation route", () => {
     );
 
     expect(response.status).toBe(500);
-    await expect(response.json()).resolves.toMatchObject({ error: "Moiré is missing its OpenAI API key." });
+    await expect(response.json()).resolves.toMatchObject({ error: "Moiré is missing its OpenRouter API key." });
   });
 });

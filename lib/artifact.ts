@@ -1,8 +1,37 @@
 import { JSDOM } from "jsdom";
-import { getOpenAI } from "@/lib/openai";
-import { emptyRepairState, type ArtifactResult, type ArtifactValidation, type RepairStage, type RepairState, type VisualizationBrief } from "@/lib/types";
+import type { Response as ModelResponse, ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
+import {
+  ARTIFACT_MAX_OUTPUT_TOKENS,
+  ARTIFACT_OUTPUT_LIMIT_RETRY_TOKENS,
+  ARTIFACT_REASONING_EFFORT,
+  getModelGateway,
+  modelMatchesRoute,
+  MODEL_ROUTES,
+} from "@/lib/model-gateway";
+import {
+  emptyRepairState,
+  MAX_ARTIFACT_MODEL_CALLS,
+  modelCallsUsed,
+  type ArtifactResult,
+  type ArtifactValidation,
+  type RepairStage,
+  type RepairState,
+  type VisualizationBrief,
+} from "@/lib/types";
 
 export const THREE_JS_URL = "https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js";
+export const SVG_NAMESPACE_URL = "http://www.w3.org/2000/svg";
+export const ARTIFACT_LAYOUT_VERSION = "1";
+export const ARTIFACT_RUNTIME_BRIDGE_VERSION = "5";
+const IGNORABLE_RESIZE_OBSERVER_ERROR =
+  /^ResizeObserver loop (?:limit exceeded|completed with undelivered notifications\.)$/i;
+export const ARTIFACT_LAYOUT_LIMITS = {
+  narrowMaxWidth: 720,
+  narrowStageRatio: 0.72,
+  wideStageRatio: 0.58,
+  minimumStageHeight: 300,
+  overflowTolerance: 2,
+} as const;
 const MAX_ARTIFACT_BYTES = 200 * 1024;
 const MAX_CONCURRENCY = 2;
 const MAX_QUEUE_DEPTH = 20;
@@ -10,6 +39,27 @@ const MAX_QUEUE_DEPTH = 20;
 export type ArtifactPriority = "interactive" | "prefetch";
 
 export class ArtifactQueueFullError extends Error {}
+
+export function isIgnorableArtifactRuntimeError(message: unknown): boolean {
+  return typeof message === "string" && IGNORABLE_RESIZE_OBSERVER_ERROR.test(message.trim());
+}
+
+export function shouldUseStageFirstFallback(metrics: {
+  viewportWidth: number;
+  stageWidth: number;
+  stageHeight: number;
+  scrollWidth: number;
+}): boolean {
+  const minimumRatio =
+    metrics.viewportWidth <= ARTIFACT_LAYOUT_LIMITS.narrowMaxWidth
+      ? ARTIFACT_LAYOUT_LIMITS.narrowStageRatio
+      : ARTIFACT_LAYOUT_LIMITS.wideStageRatio;
+  return (
+    metrics.stageWidth < metrics.viewportWidth * minimumRatio ||
+    metrics.stageHeight < ARTIFACT_LAYOUT_LIMITS.minimumStageHeight ||
+    metrics.scrollWidth > metrics.viewportWidth + ARTIFACT_LAYOUT_LIMITS.overflowTolerance
+  );
+}
 
 type QueueItem<T> = {
   task: () => Promise<T>;
@@ -101,6 +151,36 @@ function validateNetworkSurfaces(document: Document, render: "2d" | "3d", errors
   if (/@import\b/i.test(styleText)) errors.push("Artifact CSS may not use @import.");
 }
 
+function validateLayoutContract(document: Document, sliders: HTMLInputElement[], errors: string[]): void {
+  const layouts = [...document.querySelectorAll("[data-moire-layout]")];
+  const stages = [...document.querySelectorAll("[data-moire-stage]")];
+  const controls = [...document.querySelectorAll("[data-moire-controls]")];
+  const captions = [...document.querySelectorAll("[data-moire-caption]")];
+  const controlGroups = [...document.querySelectorAll("[data-moire-control]")];
+  if (layouts.length !== 1) errors.push("Artifact must contain exactly one data-moire-layout root.");
+  if (stages.length !== 1) errors.push("Artifact must contain exactly one data-moire-stage region.");
+  if (controls.length !== 1) errors.push("Artifact must contain exactly one data-moire-controls region.");
+  if (captions.length !== 1) errors.push("Artifact must contain exactly one data-moire-caption region.");
+  const layout = layouts[0];
+  if (layout && [...stages, ...controls, ...captions].some((region) => !layout.contains(region))) {
+    errors.push("Every Moiré artifact region must be contained by data-moire-layout.");
+  }
+  const controlsRegion = controls[0];
+  if (controlsRegion && sliders.some((slider) => !controlsRegion.contains(slider))) {
+    errors.push("Every parameter slider must be inside data-moire-controls.");
+  }
+  if (sliders.some((slider) => !slider.closest("[data-moire-control]"))) {
+    errors.push("Every parameter slider must be wrapped by data-moire-control.");
+  }
+  if (controlGroups.some((group) => !controlsRegion?.contains(group))) {
+    errors.push("Every data-moire-control group must be inside data-moire-controls.");
+  }
+  const duplicateTitles = [...document.querySelectorAll("h1")].filter(
+    (heading) => !heading.closest("[data-moire-chrome]"),
+  );
+  if (duplicateTitles.length > 0) errors.push("Artifact must not repeat the experiment title inside its content layout.");
+}
+
 export function validateArtifact(html: string, render: "2d" | "3d", expectedParameters = 1): ArtifactValidation {
   const errors: string[] = [];
   const bytes = Buffer.byteLength(html, "utf8");
@@ -115,6 +195,7 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   if (sliders.length < expectedParameters) {
     errors.push(`Artifact has ${sliders.length} parameter sliders; expected at least ${expectedParameters}.`);
   }
+  validateLayoutContract(document, sliders, errors);
   if (document.querySelector("iframe,object,embed,link,form,base,meta[http-equiv='refresh']")) {
     errors.push("Artifact contains a prohibited embedded or navigational element.");
   }
@@ -173,7 +254,9 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   const literalUrls = [...executableText.matchAll(/["'`]((?:https?:)?\/\/[^\s"'`<>\\)]+)["'`]/gi)].map((match) =>
     match[1].replace(/[;,]+$/, ""),
   );
-  if (literalUrls.some((url) => url !== THREE_JS_URL)) errors.push("Artifact contains a non-allowlisted URL literal.");
+  if (literalUrls.some((url) => url !== THREE_JS_URL && url !== SVG_NAMESPACE_URL)) {
+    errors.push("Artifact contains a non-allowlisted URL literal.");
+  }
   validateNetworkSurfaces(document, render, errors);
   if (render === "2d" && document.querySelector('script[type="importmap"]')) {
     errors.push("2D artifacts may not include an import map.");
@@ -191,16 +274,30 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   return { ok: errors.length === 0, errors, bytes };
 }
 
-function generatorInstructions(brief: VisualizationBrief): string {
+export function generatorInstructions(brief: VisualizationBrief): string {
   const networkRule =
     brief.render === "3d"
-      ? `Use a static import map mapping \"three\" to exactly ${THREE_JS_URL}. This is the only permitted external URL.`
-      : "Use canvas or SVG with vanilla JavaScript. Include no external URLs or imports.";
+      ? [
+          `Use exactly one static import map mapping \"three\" to ${THREE_JS_URL}, then import * as THREE from \"three\" in one inline type=\"module\" script. This is the only permitted external URL or module.`,
+          "Build a real Three.js scene with THREE.Scene, PerspectiveCamera or OrthographicCamera, and WebGLRenderer. Use procedural geometry, materials, lights, and labels only; do not load models, textures, fonts, or other assets.",
+          "Size the renderer from its visible container, cap device pixel ratio at 2, and update the camera and renderer with ResizeObserver or a resize listener.",
+          "Use requestAnimationFrame only when motion explains the concept. Keep animation deterministic and bounded, and cancel it plus dispose geometries, materials, and the renderer on pagehide.",
+          "If camera movement helps, implement pointer drag and wheel controls directly without importing OrbitControls. Keep the supplied sliders as the primary, labeled controls and make every slider visibly affect the scene.",
+          "Render the first complete frame before posting the ready message. Keep the explanatory caption legible outside the WebGL canvas.",
+        ].join(" ")
+      : `Use canvas or static inline SVG with vanilla JavaScript. Include no external URLs or imports. If JavaScript creates SVG elements, ${SVG_NAMESPACE_URL} is the only permitted namespace URL literal.`;
   return [
     "Return exactly one complete self-contained HTML file beginning with <!doctype html>. Do not use Markdown fences or commentary.",
     "Use inline CSS and JavaScript. Make the visualization responsive, accessible, and legible on a dark canvas.",
+    "Preserve mathematical notation in every visible label: render subscripts and superscripts with HTML, SVG, or deliberately offset canvas text instead of flattening symbols such as N_q, tau_q, or j_z. Reserve explicit padding for labels, legends, axes, and inset plots so text never overlaps another label, mark, control, or clipped edge at any supported width.",
+    "You own the artifact's visual expression and may choose a distinctive composition, typography, palette, motion, labels, and spatial metaphor that fit the paper concept. Avoid a generic dashboard or repeated card-grid feel.",
+    "Use exactly one data-moire-layout root containing exactly one data-moire-stage, one data-moire-controls, and one data-moire-caption region. Regions may be direct children or pass through a data-moire-support wrapper. Wrap every parameter control in data-moire-control. These attributes are semantic measurement hooks, not a prescribed visual style.",
+    "Prioritize the data-moire-stage in the visual hierarchy. At frame widths up to 720px it must occupy at least 72% of the viewport width; at wider sizes it must occupy at least 58%. It must be at least 300px tall, remain fully visible without horizontal overflow, and respond cleanly from 320px through 1200px widths. If these hard limits fail, Moiré applies a stage-first fallback layout.",
+    "The host already renders the experiment title. Begin the body directly with the data-moire-layout root: emit no h1 element, repeated title, header chrome, or page navigation. Keep controls visually subordinate and keep the What you're seeing explanation concise, ideally under 80 words. Do not use fixed page heights that clip content.",
     "Create a labeled input[type=range] with a unique id for every supplied parameter. Reference every id in JavaScript and bind an input event listener to visible behavior.",
     "Include a concise paragraph labeled 'What you're seeing' that explains the behavior in plain language.",
+    "Use only technical terminology found in anchor.text_excerpt, grounding_terms, governing_math, and parameter symbols. Ordinary interface words are allowed, but do not coin technical labels, metaphors, or domain claims.",
+    "The references array is the only exception for technical terminology not defined by the paper. Moiré renders those links outside this sandbox, so do not add links or external URLs to the artifact HTML.",
     networkRule,
     "Do not use fetch, XMLHttpRequest, WebSocket, EventSource, sendBeacon, forms, cookies, storage, or navigation.",
     "After successful initialization, call window.parent.postMessage({ready:true}, '*').",
@@ -208,14 +305,49 @@ function generatorInstructions(brief: VisualizationBrief): string {
   ].join("\n");
 }
 
-async function callGenerator(instructions: string): Promise<string> {
-  const response = await getOpenAI().responses.create({
-    model: "gpt-5.6",
-    reasoning: { effort: "high" },
-    max_output_tokens: 20_000,
+type OpenRouterResponseParams = ResponseCreateParamsNonStreaming & { models?: string[] };
+type GeneratorMode = "initial" | "output-limit-retry" | "output-limit-fallback" | "repair";
+type GeneratorCall = { html: string; model: string; outputLimited: boolean };
+
+function responseHitOutputLimit(response: ModelResponse): boolean {
+  const routed = response as ModelResponse & {
+    finish_reason?: unknown;
+    native_finish_reason?: unknown;
+    openrouter_metadata?: { finish_reason?: unknown; native_finish_reason?: unknown };
+  };
+  const reasons = [
+    response.incomplete_details?.reason,
+    routed.finish_reason,
+    routed.native_finish_reason,
+    routed.openrouter_metadata?.finish_reason,
+    routed.openrouter_metadata?.native_finish_reason,
+  ]
+    .filter((reason): reason is string => typeof reason === "string")
+    .map((reason) => reason.trim().toLowerCase().replaceAll("-", "_"));
+  return reasons.some((reason) => ["length", "max_tokens", "max_output_tokens"].includes(reason));
+}
+
+async function callGenerator(instructions: string, mode: GeneratorMode): Promise<GeneratorCall> {
+  const outputLimitRecovery = mode === "output-limit-retry" || mode === "output-limit-fallback";
+  const model =
+    mode === "repair"
+      ? MODEL_ROUTES.repair
+      : mode === "output-limit-fallback"
+        ? MODEL_ROUTES.fallback
+        : MODEL_ROUTES.artifact;
+  const request: OpenRouterResponseParams = {
+    model,
+    ...(mode === "output-limit-fallback" ? {} : { models: [MODEL_ROUTES.fallback] }),
+    reasoning: { effort: ARTIFACT_REASONING_EFFORT },
+    max_output_tokens: outputLimitRecovery ? ARTIFACT_OUTPUT_LIMIT_RETRY_TOKENS : ARTIFACT_MAX_OUTPUT_TOKENS,
     input: instructions,
-  });
-  return response.output_text.trim();
+  };
+  const response = await getModelGateway().responses.create(request);
+  return {
+    html: response.output_text.trim(),
+    model: response.model,
+    outputLimited: responseHitOutputLimit(response),
+  };
 }
 
 async function repairOnce(
@@ -223,14 +355,15 @@ async function repairOnce(
   invalidHtml: string,
   stage: RepairStage,
   errors: string[],
-): Promise<string> {
+): Promise<GeneratorCall> {
   const prior = new JSDOM(invalidHtml);
   prior.window.document
-    .querySelectorAll("meta[data-moire-csp],script[data-moire-runtime-bridge]")
+    .querySelectorAll("meta[data-moire-csp],script[data-moire-runtime-bridge],style[data-moire-layout-contract]")
     .forEach((element) => element.remove());
   const failureContext = stage === "validation" ? "server-side contract validation" : "browser execution";
   return callGenerator(
     `${generatorInstructions(brief)}\n\nThe prior attempt below failed ${failureContext}. Repair it and return a full replacement HTML file.\n${stage === "validation" ? "Validation" : "Runtime"} diagnostics:\n- ${errors.join("\n- ")}\n<invalid_artifact>\n${prior.serialize()}\n</invalid_artifact>`,
+    "repair",
   );
 }
 
@@ -241,6 +374,7 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
     .querySelectorAll("meta[http-equiv]")
     .forEach((meta) => meta.getAttribute("http-equiv")?.toLowerCase() === "content-security-policy" && meta.remove());
   document.querySelectorAll("script[data-moire-runtime-bridge]").forEach((script) => script.remove());
+  document.querySelectorAll("style[data-moire-layout-contract]").forEach((style) => style.remove());
   const csp = document.createElement("meta");
   csp.setAttribute("data-moire-csp", "");
   csp.setAttribute("http-equiv", "Content-Security-Policy");
@@ -248,9 +382,13 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
     "content",
     `default-src 'none'; script-src 'unsafe-inline'${render === "3d" ? " https://cdn.jsdelivr.net" : ""}; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`,
   );
+  const layout = document.createElement("style");
+  layout.setAttribute("data-moire-layout-contract", ARTIFACT_LAYOUT_VERSION);
+  layout.textContent = `[data-moire-chrome]{display:none!important}[data-moire-layout],[data-moire-stage],[data-moire-controls],[data-moire-caption]{max-width:100%}[data-moire-stage]{min-width:0}html[data-moire-layout-fallback="stage-first"],html[data-moire-layout-fallback="stage-first"] body{min-height:0!important}html[data-moire-layout-fallback="stage-first"] body{margin:0!important;padding:0!important;overflow-x:hidden!important}html[data-moire-layout-fallback="stage-first"] [data-moire-layout]{display:grid!important;grid-template-columns:minmax(0,1fr)!important;grid-template-areas:"stage" "controls" "caption"!important;gap:12px!important;width:100%!important;max-width:none!important;min-height:0!important;margin:0!important;padding:12px!important}html[data-moire-layout-fallback="stage-first"] [data-moire-support]{display:contents!important}html[data-moire-layout-fallback="stage-first"] [data-moire-stage]{grid-area:stage!important;width:100%!important;min-width:0!important;height:clamp(380px,68vw,560px)!important;min-height:clamp(380px,68vw,560px)!important;margin:0!important}html[data-moire-layout-fallback="stage-first"] [data-moire-stage]>canvas,html[data-moire-layout-fallback="stage-first"] [data-moire-stage]>svg,html[data-moire-layout-fallback="stage-first"] [data-moire-stage]>[data-moire-viewport]{display:block!important;width:100%!important;height:100%!important;min-height:0!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]{grid-area:controls!important;display:grid!important;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))!important;gap:8px!important;width:100%!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>h1,html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>h2,html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>h3{display:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-control]{min-width:0!important;margin:0!important;padding:10px!important;border:1px solid rgba(255,255,255,.1)!important;border-radius:8px!important;background:rgba(255,255,255,.035)!important;box-shadow:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-control] input[type=range]{width:100%!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>.hint,html[data-moire-layout-fallback="stage-first"] [data-moire-controls]>[data-moire-hint]{grid-column:1/-1!important;margin:0!important;padding:0 2px!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]{grid-area:caption!important;display:grid!important;grid-template-columns:auto minmax(0,1fr)!important;align-items:baseline!important;gap:12px!important;width:100%!important;margin:0!important;padding:8px 2px 0!important;border:0!important;border-top:1px solid rgba(255,255,255,.08)!important;border-radius:0!important;background:transparent!important;box-shadow:none!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>h1,html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>h2,html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>h3{margin:0!important;font-size:11px!important;line-height:1.4!important;letter-spacing:.08em!important;text-transform:uppercase!important;white-space:nowrap!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]>p{margin:0!important;max-width:none!important;font-size:13px!important;line-height:1.45!important}@media(max-width:420px){html[data-moire-layout-fallback="stage-first"] [data-moire-layout]{padding:8px!important}html[data-moire-layout-fallback="stage-first"] [data-moire-stage]{height:clamp(300px,82vw,380px)!important;min-height:clamp(300px,82vw,380px)!important}html[data-moire-layout-fallback="stage-first"] [data-moire-controls]{grid-template-columns:1fr!important}html[data-moire-layout-fallback="stage-first"] [data-moire-caption]{grid-template-columns:1fr!important;gap:4px!important}}`;
   const bridge = document.createElement("script");
-  bridge.setAttribute("data-moire-runtime-bridge", "");
-  bridge.textContent = `(()=>{const send=(kind,message)=>window.parent.postMessage({moire:kind,message},'*');window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>send('runtime-error',String(event.message||'Artifact runtime error').slice(0,500)));window.addEventListener('unhandledrejection',(event)=>send('runtime-error',String(event.reason||'Unhandled artifact rejection').slice(0,500)))})();`;
+  bridge.setAttribute("data-moire-runtime-bridge", ARTIFACT_RUNTIME_BRIDGE_VERSION);
+  bridge.textContent = `(()=>{const send=(kind,detail={})=>window.parent.postMessage({moire:kind,...detail},'*');const ignorableRuntimeError=(message)=>${IGNORABLE_RESIZE_OBSERVER_ERROR.toString()}.test(message.trim());let lastHeight=0;let layoutReady=false;const normalizeWrappers=()=>{const layout=document.querySelector('[data-moire-layout]');if(!layout)return;for(const region of document.querySelectorAll('[data-moire-stage],[data-moire-controls],[data-moire-caption]')){let wrapper=region.parentElement;while(wrapper&&wrapper!==layout){wrapper.setAttribute('data-moire-support','');wrapper=wrapper.parentElement}}};const enforceLayout=()=>{if(!layoutReady)return;const root=document.documentElement;if(root.dataset.moireLayoutFallback)return;const stage=document.querySelector('[data-moire-stage]');if(!stage)return;const viewport=Math.max(root.clientWidth||0,window.innerWidth||0);const rect=stage.getBoundingClientRect();const minimumRatio=viewport<=${ARTIFACT_LAYOUT_LIMITS.narrowMaxWidth}?${ARTIFACT_LAYOUT_LIMITS.narrowStageRatio}:${ARTIFACT_LAYOUT_LIMITS.wideStageRatio};const overflows=root.scrollWidth>viewport+${ARTIFACT_LAYOUT_LIMITS.overflowTolerance};if(rect.width<viewport*minimumRatio||rect.height<${ARTIFACT_LAYOUT_LIMITS.minimumStageHeight}||overflows){normalizeWrappers();root.dataset.moireLayoutFallback='stage-first'}};const measure=()=>{enforceLayout();const height=Math.ceil(Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0));if(height>0&&Math.abs(height-lastHeight)>1){lastHeight=height;send('resize',{height})}};const observe=()=>{measure();if('ResizeObserver'in window){const observer=new ResizeObserver(measure);observer.observe(document.documentElement);if(document.body)observer.observe(document.body);window.addEventListener('pagehide',()=>observer.disconnect(),{once:true})}window.addEventListener('load',measure,{once:true});requestAnimationFrame(measure);window.setTimeout(()=>{layoutReady=true;measure();requestAnimationFrame(measure)},260)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',observe,{once:true});else observe();window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>{const message=String(event.message||'Artifact runtime error');if(ignorableRuntimeError(message)){requestAnimationFrame(measure);return}send('runtime-error',{message:message.slice(0,500)})});window.addEventListener('unhandledrejection',(event)=>send('runtime-error',{message:String(event.reason||'Unhandled artifact rejection').slice(0,500)}))})();`;
+  document.head.append(layout);
   document.head.prepend(bridge);
   document.head.prepend(csp);
   return `<!doctype html>\n${document.documentElement.outerHTML}`;
@@ -258,6 +396,10 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
 
 function recordFailure(state: RepairState, stage: RepairStage, message: string): RepairState {
   return { ...state, lastFailure: { stage, message: message.slice(0, 2000) } };
+}
+
+function afterModelCall(state: RepairState): RepairState {
+  return { ...state, modelCalls: Math.min(MAX_ARTIFACT_MODEL_CALLS, modelCallsUsed(state) + 1) };
 }
 
 function validateForDelivery(
@@ -295,18 +437,59 @@ export async function generateArtifact(
   queueKey?: string,
 ): Promise<ArtifactResult> {
   return runArtifactTask(async () => {
-    const initialState = emptyRepairState();
-    const initial = await callGenerator(generatorInstructions(brief));
-    const initialValidation = validateForDelivery(initial, brief.render, brief.parameters.length);
-    if (initialValidation.ok) return successfulArtifact(initial, brief.render, initialState);
+    const instructions = generatorInstructions(brief);
+    let state = afterModelCall(emptyRepairState());
+    let generated = await callGenerator(instructions, "initial");
+    if (generated.outputLimited) {
+      state = recordFailure(state, "generation", "Initial generation reached its 20,000-token output limit.");
+      generated = await callGenerator(instructions, "output-limit-retry");
+      state = afterModelCall(state);
+      if (generated.outputLimited) {
+        state = recordFailure(state, "generation", "The 32,000-token regeneration also reached its output limit.");
+        if (modelMatchesRoute(generated.model, MODEL_ROUTES.fallback)) {
+          return {
+            ok: false,
+            error: "The visualization reached its output limit after the bounded regeneration.",
+            repairState: state,
+          };
+        }
+        generated = await callGenerator(instructions, "output-limit-fallback");
+        state = afterModelCall(state);
+        if (generated.outputLimited) {
+          return {
+            ok: false,
+            error: "The visualization reached its output limit after the bounded Terra fallback.",
+            repairState: recordFailure(state, "generation", "The Terra fallback reached its 32,000-token output limit."),
+          };
+        }
+      }
+    }
+
+    const initialValidation = validateForDelivery(generated.html, brief.render, brief.parameters.length);
+    if (initialValidation.ok) return successfulArtifact(generated.html, brief.render, state);
+    if (modelCallsUsed(state) >= MAX_ARTIFACT_MODEL_CALLS) {
+      return {
+        ok: false,
+        error: `The visualization failed its safety checks after output-limit recovery: ${initialValidation.errors.join(" ")}`,
+        repairState: recordFailure(state, "validation", initialValidation.errors.join(" ")),
+      };
+    }
 
     const validationRepairState: RepairState = {
       attempts: { validation: 1, runtime: 0 },
       lastFailure: { stage: "validation", message: initialValidation.errors.join(" ").slice(0, 2000) },
+      modelCalls: modelCallsUsed(state) + 1,
     };
-    const repaired = await repairOnce(brief, initial, "validation", initialValidation.errors);
-    const repairedValidation = validateForDelivery(repaired, brief.render, brief.parameters.length);
-    if (repairedValidation.ok) return successfulArtifact(repaired, brief.render, validationRepairState);
+    const repaired = await repairOnce(brief, generated.html, "validation", initialValidation.errors);
+    if (repaired.outputLimited) {
+      return {
+        ok: false,
+        error: "The visualization repair reached its output limit.",
+        repairState: recordFailure(validationRepairState, "generation", "The validation repair reached its output limit."),
+      };
+    }
+    const repairedValidation = validateForDelivery(repaired.html, brief.render, brief.parameters.length);
+    if (repairedValidation.ok) return successfulArtifact(repaired.html, brief.render, validationRepairState);
     const terminalState = recordFailure(validationRepairState, "validation", repairedValidation.errors.join(" "));
     return {
       ok: false,
@@ -323,18 +506,26 @@ export async function repairRuntimeFailure(
   priorState: RepairState,
 ): Promise<ArtifactResult> {
   const failureState = recordFailure(priorState, "runtime", runtimeError);
-  if (priorState.attempts.runtime === 1) {
+  if (priorState.attempts.runtime === 1 || modelCallsUsed(priorState) >= MAX_ARTIFACT_MODEL_CALLS) {
     return { ok: false, error: "The visualization could not start after its runtime repair.", repairState: failureState };
   }
   return runArtifactTask(async () => {
     const runtimeRepairState: RepairState = {
       attempts: { validation: priorState.attempts.validation, runtime: 1 },
       lastFailure: failureState.lastFailure,
+      modelCalls: modelCallsUsed(priorState) + 1,
     };
     const repaired = await repairOnce(brief, invalidHtml, "runtime", [runtimeError]);
-    const validation = validateForDelivery(repaired, brief.render, brief.parameters.length);
+    if (repaired.outputLimited) {
+      return {
+        ok: false,
+        error: "The visualization runtime repair reached its output limit.",
+        repairState: recordFailure(runtimeRepairState, "generation", "The runtime repair reached its output limit."),
+      };
+    }
+    const validation = validateForDelivery(repaired.html, brief.render, brief.parameters.length);
     return validation.ok
-      ? successfulArtifact(repaired, brief.render, runtimeRepairState)
+      ? successfulArtifact(repaired.html, brief.render, runtimeRepairState)
       : {
           ok: false,
           error: `The visualization failed after its runtime repair: ${validation.errors.join(" ")}`,

@@ -1,14 +1,24 @@
+import { createHash } from "node:crypto";
+import { getCache } from "@vercel/functions";
+import { unstable_cache } from "next/cache";
 import {
   ArtifactQueueFullError,
+  ARTIFACT_RUNTIME_BRIDGE_VERSION,
   generateArtifact,
   promoteArtifactTask,
   repairRuntimeFailure,
+  validateArtifact,
+  withArtifactCsp,
   type ArtifactPriority,
 } from "@/lib/artifact";
 import { normalizeTarget } from "@/lib/target";
-import { OpenAIConfigurationError } from "@/lib/openai";
+import { ModelGatewayConfigurationError } from "@/lib/model-gateway";
 import {
+  briefSchema,
   emptyRepairState,
+  MAX_ARTIFACT_MODEL_CALLS,
+  modelCallsUsed,
+  repairStateSchema,
   type ArtifactDescriptor,
   type ArtifactKind,
   type ArtifactResult,
@@ -19,7 +29,9 @@ import {
 } from "@/lib/types";
 
 const CACHE_TTL_MS = 60 * 60_000;
+const CACHE_TTL_SECONDS = CACHE_TTL_MS / 1000;
 const MAX_CACHE_ENTRIES = 120;
+const runtimeStore = getCache({ namespace: "moire-artifacts-v1" });
 
 type ArtifactRecord = {
   artifactId: string;
@@ -29,6 +41,7 @@ type ArtifactRecord = {
   kind: ArtifactKind;
   status: ArtifactStatus;
   repairState: RepairState;
+  seedHash?: string;
   result?: ArtifactResult;
   generationPromise?: Promise<ArtifactResult>;
   repairPromise?: Promise<ArtifactResult>;
@@ -39,6 +52,8 @@ type ArtifactStore = {
   byId: Map<string, ArtifactRecord>;
   idByKey: Map<string, string>;
 };
+
+type PersistedArtifactRecord = Omit<ArtifactRecord, "generationPromise" | "repairPromise">;
 
 type CacheGlobal = typeof globalThis & {
   __moireArtifactStore?: ArtifactStore;
@@ -58,6 +73,61 @@ export class ArtifactCacheFullError extends Error {}
 
 function cacheKey(targetUrl: string, brief: VisualizationBrief, variantKey?: string): string {
   return `${targetUrl}\u0000${brief.anchor.dom_selector}\u0000${variantKey ?? "page"}`;
+}
+
+function artifactIdForKey(key: string): string {
+  const hex = createHash("sha256").update(key).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const value = hex.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
+function persistedRecord(value: unknown): PersistedArtifactRecord | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<PersistedArtifactRecord>;
+  const parsedBrief = briefSchema.safeParse(candidate.brief);
+  if (
+    typeof candidate.artifactId !== "string" ||
+    typeof candidate.cacheKey !== "string" ||
+    typeof candidate.targetUrl !== "string" ||
+    (candidate.kind !== "page" && candidate.kind !== "selection") ||
+    !["idle", "generating", "ready", "repairing", "error"].includes(candidate.status ?? "") ||
+    typeof candidate.lastAccessedAt !== "number" ||
+    (candidate.seedHash !== undefined && typeof candidate.seedHash !== "string") ||
+    !parsedBrief.success ||
+    !repairStateSchema.safeParse(candidate.repairState).success
+  ) {
+    return null;
+  }
+  if (candidate.result) {
+    if (candidate.result.ok) {
+      if (typeof candidate.result.html !== "string" || !repairStateSchema.safeParse(candidate.result.repairState).success) {
+        return null;
+      }
+    } else if (
+      typeof candidate.result.error !== "string" ||
+      !repairStateSchema.safeParse(candidate.result.repairState).success
+    ) {
+      return null;
+    }
+  }
+  return { ...(candidate as PersistedArtifactRecord), brief: parsedBrief.data };
+}
+
+async function persistRecord(record: ArtifactRecord): Promise<void> {
+  const { generationPromise: _generationPromise, repairPromise: _repairPromise, ...persisted } = record;
+  await runtimeStore.set(record.artifactId, persisted, {
+    ttl: CACHE_TTL_SECONDS,
+    tags: ["moire-artifacts"],
+    name: `Moiré artifact ${record.artifactId}`,
+  });
+}
+
+function installRecord(record: ArtifactRecord): ArtifactRecord {
+  store.byId.set(record.artifactId, record);
+  store.idByKey.set(record.cacheKey, record.artifactId);
+  return record;
 }
 
 function dropRecord(record: ArtifactRecord): void {
@@ -85,8 +155,31 @@ function descriptor(record: ArtifactRecord): ArtifactDescriptor {
   return { artifactId: record.artifactId, status: record.status, kind: record.kind, brief: record.brief };
 }
 
-function requireRecord(artifactId: string): ArtifactRecord {
-  const record = store.byId.get(artifactId);
+function sameBriefSource(left: VisualizationBrief, right: VisualizationBrief): boolean {
+  return JSON.stringify({
+    anchor: left.anchor,
+    groundingTerms: left.grounding_terms,
+    references: left.references,
+  }) === JSON.stringify({
+    anchor: right.anchor,
+    groundingTerms: right.grounding_terms,
+    references: right.references,
+  });
+}
+
+function isActive(record: ArtifactRecord): boolean {
+  return record.status === "generating" || record.status === "repairing";
+}
+
+function invalidateRecord(record: ArtifactRecord, brief: VisualizationBrief): void {
+  record.brief = brief;
+  record.status = "idle";
+  record.repairState = emptyRepairState();
+  record.seedHash = undefined;
+  record.result = undefined;
+}
+
+function touchRecord(record: ArtifactRecord | undefined): ArtifactRecord {
   if (!record) throw new ArtifactNotFoundError("The visualization is no longer in this server's cache.");
   const now = Date.now();
   if (
@@ -101,6 +194,39 @@ function requireRecord(artifactId: string): ArtifactRecord {
   return record;
 }
 
+function requireLocalRecord(artifactId: string): ArtifactRecord {
+  return touchRecord(store.byId.get(artifactId));
+}
+
+async function requirePersistentRecord(artifactId: string): Promise<ArtifactRecord> {
+  let record = store.byId.get(artifactId);
+  if (!record) {
+    const restored = persistedRecord(await runtimeStore.get(artifactId));
+    if (restored) record = installRecord(restored);
+  }
+  return touchRecord(record);
+}
+
+const generateDurableArtifact = unstable_cache(
+  async (artifactId: string, brief: VisualizationBrief): Promise<ArtifactResult> =>
+    generateArtifact(brief, "interactive", artifactId),
+  ["moire-artifact-generation-v1"],
+  { revalidate: CACHE_TTL_SECONDS, tags: ["moire-artifacts"] },
+);
+
+const repairDurableArtifact = unstable_cache(
+  async (
+    artifactId: string,
+    brief: VisualizationBrief,
+    invalidHtml: string,
+    runtimeDiagnostic: string,
+    priorState: RepairState,
+  ): Promise<ArtifactResult> =>
+    repairRuntimeFailure(brief, invalidHtml, runtimeDiagnostic, priorState),
+  ["moire-artifact-runtime-repair-v1"],
+  { revalidate: CACHE_TTL_SECONDS, tags: ["moire-artifacts"] },
+);
+
 function withServerRepairState(result: ArtifactResult, repairState: RepairState): ArtifactResult {
   return result.ok
     ? { ok: true, html: result.html, repairState }
@@ -108,6 +234,11 @@ function withServerRepairState(result: ArtifactResult, repairState: RepairState)
 }
 
 function envelope(record: ArtifactRecord, result: ArtifactResult, cached: boolean): CachedArtifactResult {
+  if (result.ok && !result.html.includes(`data-moire-runtime-bridge="${ARTIFACT_RUNTIME_BRIDGE_VERSION}"`)) {
+    const html = withArtifactCsp(result.html, record.brief.render);
+    if (record.result?.ok && record.result.html === result.html) record.result = { ...record.result, html };
+    return { ...result, html, artifactId: record.artifactId, cached };
+  }
   return { ...result, artifactId: record.artifactId, cached };
 }
 
@@ -142,12 +273,12 @@ export function registerArtifactBriefs(
     const existing = existingId ? store.byId.get(existingId) : undefined;
     if (existing) {
       existing.lastAccessedAt = now;
-      if (existing.status === "idle") existing.brief = brief;
+      if (!isActive(existing) && !sameBriefSource(existing.brief, brief)) invalidateRecord(existing, brief);
       return descriptor(existing);
     }
 
     const record: ArtifactRecord = {
-      artifactId: crypto.randomUUID(),
+      artifactId: artifactIdForKey(key),
       cacheKey: key,
       targetUrl: normalizedTarget,
       brief,
@@ -162,11 +293,86 @@ export function registerArtifactBriefs(
   });
 }
 
+export async function synchronizeArtifactBriefs(descriptors: ArtifactDescriptor[]): Promise<ArtifactDescriptor[]> {
+  if (process.env.VERCEL !== "1") return descriptors;
+  return Promise.all(
+    descriptors.map(async (candidate) => {
+      const local = store.byId.get(candidate.artifactId);
+      if (!local) return candidate;
+      if (isActive(local)) return descriptor(local);
+      const restored = persistedRecord(await runtimeStore.get(candidate.artifactId));
+      if (restored && Date.now() - restored.lastAccessedAt <= CACHE_TTL_MS) {
+        const matchesCurrentSource =
+          restored.cacheKey === local.cacheKey &&
+          restored.targetUrl === local.targetUrl &&
+          restored.kind === local.kind &&
+          sameBriefSource(restored.brief, local.brief);
+        if (!matchesCurrentSource) {
+          invalidateRecord(local, local.brief);
+          local.lastAccessedAt = Date.now();
+          await persistRecord(local);
+          return descriptor(local);
+        }
+        const record = installRecord({ ...restored, brief: local.brief, lastAccessedAt: Date.now() });
+        await persistRecord(record);
+        return descriptor(record);
+      }
+      await persistRecord(local);
+      return descriptor(local);
+    }),
+  );
+}
+
+export async function primeCachedArtifacts(
+  descriptors: ArtifactDescriptor[],
+  htmlByArtifact: Map<string, string>,
+): Promise<ArtifactDescriptor[]> {
+  return Promise.all(
+    descriptors.map(async (candidate) => {
+      const record = store.byId.get(candidate.artifactId);
+      const html = htmlByArtifact.get(candidate.artifactId);
+      if (!record || !html) return candidate;
+      record.brief = candidate.brief;
+      const seedHash = createHash("sha256").update(html).digest("hex");
+      if (record.seedHash === seedHash && record.result) {
+        record.lastAccessedAt = Date.now();
+        if (process.env.VERCEL === "1") await persistRecord(record);
+        return descriptor(record);
+      }
+      if (record.status === "generating" || record.status === "repairing") return descriptor(record);
+      const validation = validateArtifact(html, record.brief.render, record.brief.parameters.length);
+      if (!validation.ok) {
+        throw new Error(`Curated artifact ${record.artifactId} is invalid: ${validation.errors.join(" ")}`);
+      }
+      const secured = withArtifactCsp(html, record.brief.render);
+      if (Buffer.byteLength(secured, "utf8") > 200 * 1024) {
+        throw new Error(`Curated artifact ${record.artifactId} exceeds the artifact size limit.`);
+      }
+      record.repairState = emptyRepairState();
+      record.seedHash = seedHash;
+      record.result = { ok: true, html: secured, repairState: record.repairState };
+      record.status = "ready";
+      record.lastAccessedAt = Date.now();
+      await persistRecord(record);
+      return descriptor(record);
+    }),
+  );
+}
+
+export function readyCachedArtifacts(descriptors: ArtifactDescriptor[]): CachedArtifactResult[] {
+  return descriptors.flatMap((candidate) => {
+    const record = store.byId.get(candidate.artifactId);
+    if (!record?.result?.ok || record.status !== "ready") return [];
+    return [envelope(record, withServerRepairState(record.result, record.repairState), true)];
+  });
+}
+
 export async function generateCachedArtifact(
   artifactId: string,
   priority: ArtifactPriority = "interactive",
 ): Promise<CachedArtifactResult> {
-  const record = requireRecord(artifactId);
+  const record =
+    process.env.VERCEL === "1" ? await requirePersistentRecord(artifactId) : requireLocalRecord(artifactId);
   if (record.result && (record.status === "ready" || record.status === "error")) {
     return envelope(record, withServerRepairState(record.result, record.repairState), true);
   }
@@ -179,29 +385,28 @@ export async function generateCachedArtifact(
   }
 
   record.status = "generating";
-  const work = generateArtifact(record.brief, priority, record.artifactId)
-    .then((result) => {
+  if (process.env.VERCEL === "1") await persistRecord(record);
+  const generation =
+    process.env.VERCEL === "1"
+      ? generateDurableArtifact(record.artifactId, record.brief)
+      : generateArtifact(record.brief, priority, record.artifactId);
+  const work = generation
+    .then(async (result) => {
       record.repairState = result.repairState;
       record.result = result;
       record.status = result.ok ? "ready" : "error";
       record.lastAccessedAt = Date.now();
+      await persistRecord(record);
       return result;
     })
-    .catch((error) => {
-      if (error instanceof ArtifactQueueFullError || error instanceof OpenAIConfigurationError) {
-        record.status = "idle";
-        throw error;
-      }
-      console.error("Artifact generation pipeline failed", { artifactId: record.artifactId, error });
-      const terminalResult: ArtifactResult = {
-        ok: false,
-        error: "The visualization generation failed before it produced an artifact.",
-        repairState: record.repairState,
-      };
-      record.result = terminalResult;
-      record.status = "error";
+    .catch(async (error) => {
+      record.status = "idle";
+      record.result = undefined;
       record.lastAccessedAt = Date.now();
-      return terminalResult;
+      await persistRecord(record);
+      if (error instanceof ArtifactQueueFullError || error instanceof ModelGatewayConfigurationError) throw error;
+      console.error("Artifact generation pipeline failed", { artifactId: record.artifactId, error });
+      throw error;
     })
     .finally(() => {
       record.generationPromise = undefined;
@@ -211,7 +416,8 @@ export async function generateCachedArtifact(
 }
 
 export async function repairCachedArtifact(artifactId: string, runtimeError: string): Promise<CachedArtifactResult> {
-  const record = requireRecord(artifactId);
+  const record =
+    process.env.VERCEL === "1" ? await requirePersistentRecord(artifactId) : requireLocalRecord(artifactId);
   const current = record.result;
   if (!current?.ok) throw new ArtifactNotReadyError("The visualization is not ready for runtime repair.");
 
@@ -221,14 +427,19 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
     record.result = withServerRepairState(current, record.repairState);
     return envelope(record, await record.repairPromise, true);
   }
-  if (record.repairState.attempts.runtime === 1) {
+  const runtimeAlreadyAttempted = record.repairState.attempts.runtime === 1;
+  const modelCallBudgetExhausted = modelCallsUsed(record.repairState) >= MAX_ARTIFACT_MODEL_CALLS;
+  if (runtimeAlreadyAttempted || modelCallBudgetExhausted) {
     record.repairState = { ...record.repairState, lastFailure: { stage: "runtime", message: diagnostic } };
     record.result = withServerRepairState(current, record.repairState);
     record.status = "ready";
     record.lastAccessedAt = Date.now();
+    await persistRecord(record);
     const terminalResult: ArtifactResult = {
       ok: false,
-      error: "The visualization could not start after its runtime repair.",
+      error: runtimeAlreadyAttempted
+        ? "The visualization could not start after its runtime repair."
+        : "The visualization could not start within its three-call model budget.",
       repairState: record.repairState,
     };
     return envelope(record, terminalResult, true);
@@ -238,33 +449,43 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
   record.repairState = {
     attempts: { validation: priorState.attempts.validation, runtime: 1 },
     lastFailure: { stage: "runtime", message: diagnostic },
+    modelCalls: modelCallsUsed(priorState) + 1,
   };
   record.result = withServerRepairState(current, record.repairState);
   record.status = "repairing";
+  if (process.env.VERCEL === "1") await persistRecord(record);
 
-  const work = repairRuntimeFailure(record.brief, current.html, diagnostic, priorState)
-    .then((result) => {
+  const repair =
+    process.env.VERCEL === "1"
+      ? repairDurableArtifact(record.artifactId, record.brief, current.html, diagnostic, priorState)
+      : repairRuntimeFailure(record.brief, current.html, diagnostic, priorState);
+  const work = repair
+    .then(async (result) => {
       const authoritativeState: RepairState = {
         attempts: { validation: result.repairState.attempts.validation, runtime: 1 },
         lastFailure: result.ok ? record.repairState.lastFailure : result.repairState.lastFailure,
+        modelCalls: result.repairState.modelCalls,
       };
       const authoritativeResult = withServerRepairState(result, authoritativeState);
       record.repairState = authoritativeState;
       record.result = authoritativeResult;
       record.status = authoritativeResult.ok ? "ready" : "error";
       record.lastAccessedAt = Date.now();
+      await persistRecord(record);
       return authoritativeResult;
     })
-    .catch((error) => {
-      if (error instanceof ArtifactQueueFullError || error instanceof OpenAIConfigurationError) {
+    .catch(async (error) => {
+      if (error instanceof ArtifactQueueFullError || error instanceof ModelGatewayConfigurationError) {
         const retryableState: RepairState = {
           attempts: priorState.attempts,
           lastFailure: record.repairState.lastFailure,
+          modelCalls: priorState.modelCalls,
         };
         record.repairState = retryableState;
         record.result = withServerRepairState(current, retryableState);
         record.status = "ready";
         record.lastAccessedAt = Date.now();
+        await persistRecord(record);
         throw error;
       }
       console.error("Artifact runtime repair failed", { artifactId: record.artifactId, error });
@@ -276,6 +497,7 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
       record.result = terminalResult;
       record.status = "error";
       record.lastAccessedAt = Date.now();
+      await persistRecord(record);
       return terminalResult;
     })
     .finally(() => {

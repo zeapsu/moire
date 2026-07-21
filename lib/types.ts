@@ -11,6 +11,14 @@ export const parameterSchema = z
   })
   .strict();
 
+export const referenceSchema = z
+  .object({
+    term: z.string().min(1),
+    label: z.string().min(1),
+    url: z.string().regex(/^https?:\/\/[^\s]+$/i),
+  })
+  .strict();
+
 export const briefSchema = z
   .object({
     span_id: z.string().regex(/^s-\d+$/),
@@ -27,6 +35,8 @@ export const briefSchema = z
     viz_kind: z.enum(["simulation", "animated-diagram", "interactive-plot", "3d-scene"]),
     render: z.enum(["2d", "3d"]),
     governing_math: z.string(),
+    grounding_terms: z.array(z.string().min(1)).min(1).max(12).default([]),
+    references: z.array(referenceSchema).max(4).default([]),
     parameters: z.array(parameterSchema).min(1).max(6),
     expected_behavior: z.string().min(1),
     score: z.number().min(0).max(1),
@@ -39,7 +49,20 @@ export const briefBatchSchema = z
   })
   .strict();
 
+export const selectionScanSchema = z
+  .object({
+    assessment: z
+      .object({
+        status: z.enum(["sufficient", "too_narrow", "multiple_concepts"]),
+        reason: z.string().min(1).max(240),
+      })
+      .strict(),
+    briefs: z.array(briefSchema).max(1),
+  })
+  .strict();
+
 export type VisualizationBrief = z.infer<typeof briefSchema>;
+export type SelectionScan = z.infer<typeof selectionScanSchema>;
 
 export type ScanSection = {
   selector: `#p-${number}`;
@@ -63,7 +86,7 @@ export type ArtifactValidation = {
   bytes: number;
 };
 
-export const repairStageSchema = z.enum(["validation", "runtime"]);
+export const repairStageSchema = z.enum(["generation", "validation", "runtime"]);
 
 export const repairStateSchema = z
   .object({
@@ -80,14 +103,20 @@ export const repairStateSchema = z
       })
       .strict()
       .nullable(),
+    modelCalls: z.number().int().min(0).max(3).optional(),
   })
   .strict();
 
 export type RepairStage = z.infer<typeof repairStageSchema>;
 export type RepairState = z.infer<typeof repairStateSchema>;
+export const MAX_ARTIFACT_MODEL_CALLS = 3;
+
+export function modelCallsUsed(state: RepairState): number {
+  return state.modelCalls ?? Math.min(MAX_ARTIFACT_MODEL_CALLS, 1 + state.attempts.validation + state.attempts.runtime);
+}
 
 export function emptyRepairState(): RepairState {
-  return { attempts: { validation: 0, runtime: 0 }, lastFailure: null };
+  return { attempts: { validation: 0, runtime: 0 }, lastFailure: null, modelCalls: 0 };
 }
 
 export type ArtifactResult =
