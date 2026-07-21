@@ -1,6 +1,9 @@
 import { extractArxivId } from "@/lib/target";
 import { GAUSSIAN_SPLATTING_HTML } from "@/lib/seeded-gaussian-splatting";
+import generatedSeededHtml from "@/lib/seeded-artifacts.json";
 import type { ScanSection, VisualizationBrief } from "@/lib/types";
+
+const GENERATED_SEEDED_HTML = generatedSeededHtml as Record<string, string>;
 
 const INLINE_GAUSSIAN_SPLATTING_HTML = GAUSSIAN_SPLATTING_HTML
   .replace("<header>", "<header data-moire-chrome>")
@@ -96,7 +99,7 @@ function instantiate(definitions: SeedDefinition[], sections: ScanSection[]): Se
         expected_behavior: definition.expectedBehavior,
         score: 0.99 - index * 0.02,
       },
-      html: definition.html ?? artifactHtml(definition),
+      html: GENERATED_SEEDED_HTML[definition.title] ?? definition.html ?? artifactHtml(definition),
     });
   }
   return artifacts.length > 0 ? artifacts : null;

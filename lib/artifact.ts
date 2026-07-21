@@ -3,6 +3,7 @@ import { getOpenAI } from "@/lib/openai";
 import { emptyRepairState, type ArtifactResult, type ArtifactValidation, type RepairStage, type RepairState, type VisualizationBrief } from "@/lib/types";
 
 export const THREE_JS_URL = "https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js";
+export const SVG_NAMESPACE_URL = "http://www.w3.org/2000/svg";
 export const ARTIFACT_LAYOUT_VERSION = "1";
 export const ARTIFACT_RUNTIME_BRIDGE_VERSION = "3";
 export const ARTIFACT_LAYOUT_LIMITS = {
@@ -230,7 +231,9 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   const literalUrls = [...executableText.matchAll(/["'`]((?:https?:)?\/\/[^\s"'`<>\\)]+)["'`]/gi)].map((match) =>
     match[1].replace(/[;,]+$/, ""),
   );
-  if (literalUrls.some((url) => url !== THREE_JS_URL)) errors.push("Artifact contains a non-allowlisted URL literal.");
+  if (literalUrls.some((url) => url !== THREE_JS_URL && url !== SVG_NAMESPACE_URL)) {
+    errors.push("Artifact contains a non-allowlisted URL literal.");
+  }
   validateNetworkSurfaces(document, render, errors);
   if (render === "2d" && document.querySelector('script[type="importmap"]')) {
     errors.push("2D artifacts may not include an import map.");
@@ -259,14 +262,14 @@ export function generatorInstructions(brief: VisualizationBrief): string {
           "If camera movement helps, implement pointer drag and wheel controls directly without importing OrbitControls. Keep the supplied sliders as the primary, labeled controls and make every slider visibly affect the scene.",
           "Render the first complete frame before posting the ready message. Keep the explanatory caption legible outside the WebGL canvas.",
         ].join(" ")
-      : "Use canvas or SVG with vanilla JavaScript. Include no external URLs or imports.";
+      : `Use canvas or static inline SVG with vanilla JavaScript. Include no external URLs or imports. If JavaScript creates SVG elements, ${SVG_NAMESPACE_URL} is the only permitted namespace URL literal.`;
   return [
     "Return exactly one complete self-contained HTML file beginning with <!doctype html>. Do not use Markdown fences or commentary.",
     "Use inline CSS and JavaScript. Make the visualization responsive, accessible, and legible on a dark canvas.",
     "You own the artifact's visual expression and may choose a distinctive composition, typography, palette, motion, labels, and spatial metaphor that fit the paper concept. Avoid a generic dashboard or repeated card-grid feel.",
     "Use exactly one data-moire-layout root containing exactly one data-moire-stage, one data-moire-controls, and one data-moire-caption region. Regions may be direct children or pass through a data-moire-support wrapper. Wrap every parameter control in data-moire-control. These attributes are semantic measurement hooks, not a prescribed visual style.",
     "Prioritize the data-moire-stage in the visual hierarchy. At frame widths up to 720px it must occupy at least 72% of the viewport width; at wider sizes it must occupy at least 58%. It must be at least 300px tall, remain fully visible without horizontal overflow, and respond cleanly from 320px through 1200px widths. If these hard limits fail, Moiré applies a stage-first fallback layout.",
-    "Do not repeat the experiment title or add page navigation. Keep controls visually subordinate and keep the What you're seeing explanation concise, ideally under 80 words. Do not use fixed page heights that clip content.",
+    "The host already renders the experiment title. Begin the body directly with the data-moire-layout root: emit no h1 element, repeated title, header chrome, or page navigation. Keep controls visually subordinate and keep the What you're seeing explanation concise, ideally under 80 words. Do not use fixed page heights that clip content.",
     "Create a labeled input[type=range] with a unique id for every supplied parameter. Reference every id in JavaScript and bind an input event listener to visible behavior.",
     "Include a concise paragraph labeled 'What you're seeing' that explains the behavior in plain language.",
     "Use only technical terminology found in anchor.text_excerpt, grounding_terms, governing_math, and parameter symbols. Ordinary interface words are allowed, but do not coin technical labels, metaphors, or domain claims.",
@@ -280,7 +283,7 @@ export function generatorInstructions(brief: VisualizationBrief): string {
 
 async function callGenerator(instructions: string): Promise<string> {
   const response = await getOpenAI().responses.create({
-    model: "gpt-5.6",
+    model: "gpt-5.6-sol",
     reasoning: { effort: "high" },
     max_output_tokens: 20_000,
     input: instructions,

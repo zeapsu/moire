@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "generate:seeded": "tsx scripts/regenerate-seeded-artifacts.ts",
     "start": "next start",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -30,6 +31,7 @@
     "@types/node": "24.10.1",
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
+    "tsx": "^4.20.6",
     "typescript": "5.9.3",
     "vitest": "4.1.10"
   },

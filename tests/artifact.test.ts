@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   generatorInstructions,
+  SVG_NAMESPACE_URL,
   shouldUseStageFirstFallback,
   THREE_JS_URL,
   validateArtifact,
@@ -38,6 +39,7 @@ describe("artifact validation", () => {
     expect(instructions).toContain("first complete frame");
     expect(instructions).toContain("visual expression");
     expect(instructions).toContain("at least 72%");
+    expect(instructions).toContain("emit no h1 element");
     expect(instructions).toContain("stage-first fallback");
   });
 
@@ -163,6 +165,15 @@ describe("artifact validation", () => {
     );
     expect(validateArtifact(dataArtifact, "2d").ok).toBe(true);
     expect(validateArtifact(networkArtifact, "2d").ok).toBe(false);
+  });
+
+  it("allows the inert SVG namespace without allowing another URL literal", () => {
+    const svg = valid2d.replace(
+      "document.getElementById",
+      `document.createElementNS('${SVG_NAMESPACE_URL}', 'svg'); document.getElementById`,
+    );
+    expect(validateArtifact(svg, "2d").ok).toBe(true);
+    expect(validateArtifact(svg.replace(SVG_NAMESPACE_URL, "https://evil.example/svg"), "2d").ok).toBe(false);
   });
 
   it("accepts equivalent quoted, reordered, and variable ready payloads", () => {
