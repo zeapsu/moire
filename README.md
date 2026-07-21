@@ -25,9 +25,9 @@ You can also paste an arXiv ID or any public `http`/`https` page with readable a
 
 Source-page links that target another section of the same document stay inside Moiré. External links remain explicit links to the original destination.
 
-## Local setup
+## Local setup (optional)
 
-Requirements: Node.js 20.18.1 or newer and an OpenRouter API key. Provider BYOK credentials are configured in OpenRouter rather than exposed to this application.
+The public demo requires no account, credentials, or API key. To run Moiré locally, install Node.js 20.18.1 or newer:
 
 ```bash
 npm install
@@ -35,13 +35,13 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Set this value in `.env.local`:
+An OpenRouter key is required only when exercising live model-backed scanning or generation locally:
 
 ```text
 OPENROUTER_API_KEY=your_key_here
 ```
 
-Then open `http://localhost:3000`. Set `MOIRE_QA_NO_AI=1` for ingestion and UI QA that must not call the model gateway.
+Then open `http://localhost:3000`. Set `MOIRE_QA_NO_AI=1` to run ingestion and UI QA without an API key or paid model calls.
 
 ## Verification
 
