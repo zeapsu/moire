@@ -5,17 +5,17 @@ import { useEffect, useRef, useState } from "react";
 type ArtifactFrameProps = {
   html: string;
   title: string;
+  instant?: boolean;
   onRuntimeFailure: (message: string) => void;
   onDismiss?: () => void;
 };
 
-export function ArtifactFrame({ html, title, onRuntimeFailure, onDismiss }: ArtifactFrameProps) {
+export function ArtifactFrame({ html, title, instant = false, onRuntimeFailure, onDismiss }: ArtifactFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const failureRef = useRef(onRuntimeFailure);
   const dismissRef = useRef(onDismiss);
   const readyRef = useRef(false);
   const failedRef = useRef(false);
-  const [activeHtml, setActiveHtml] = useState("");
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -54,7 +54,6 @@ export function ArtifactFrame({ html, title, onRuntimeFailure, onDismiss }: Arti
       }
     };
     window.addEventListener("message", receive);
-    setActiveHtml(html);
     const timeout = window.setTimeout(() => {
       if (!readyRef.current && !failedRef.current) {
         failedRef.current = true;
@@ -69,13 +68,13 @@ export function ArtifactFrame({ html, title, onRuntimeFailure, onDismiss }: Arti
 
   return (
     <div className="artifact-runtime">
-      {!ready ? <div className="runtime-status">◨ Starting the experiment…</div> : null}
+      {!ready && !instant ? <div className="runtime-status">◨ Starting the experiment…</div> : null}
       <iframe
         ref={iframeRef}
         title={title}
         sandbox="allow-scripts"
-        srcDoc={activeHtml}
-        className={ready ? "is-ready" : ""}
+        srcDoc={html}
+        className={ready || instant ? "is-ready" : ""}
       />
     </div>
   );

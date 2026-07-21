@@ -70,8 +70,10 @@ export function InlineExperiment({ view, pinned, onPin, onCollapse, onRetry, onR
           ) : null}
           {view.status === "ready" ? (
             <ArtifactFrame
+              key={view.descriptor.artifactId}
               html={view.html}
               title={view.descriptor.brief.title}
+              instant={view.cached}
               onRuntimeFailure={onRuntimeFailure}
               onDismiss={onCollapse}
             />
