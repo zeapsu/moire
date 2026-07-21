@@ -30,6 +30,8 @@ describe("artifact validation", () => {
     expect(instructions).toContain("pagehide");
     expect(instructions).toContain("pointer drag");
     expect(instructions).toContain("first complete frame");
+    expect(instructions).toContain("normal document flow");
+    expect(instructions).toContain("controls beside the visualization");
   });
 
   it("keeps Three.js out of the 2D generation contract", () => {
@@ -92,7 +94,9 @@ describe("artifact validation", () => {
     expect(secured).toContain("Content-Security-Policy");
     expect(secured).toContain("default-src 'none'");
     expect(secured).toContain("connect-src 'none'");
-    expect(secured).toContain("data-moire-runtime-bridge");
+    expect(secured).toContain('data-moire-runtime-bridge="2"');
+    expect(secured).toContain("ResizeObserver");
+    expect(secured).toContain("send('resize',{height})");
     expect(withArtifactCsp(secured, "2d").match(/data-moire-runtime-bridge/g)).toHaveLength(1);
   });
 

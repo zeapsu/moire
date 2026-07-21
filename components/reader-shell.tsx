@@ -20,6 +20,7 @@ import {
   type SelectionFocusAssessment,
   type SelectionPolicyResult,
 } from "@/lib/selection-policy";
+import { collectSelectionContext } from "@/lib/selection-context";
 import type {
   ArtifactDescriptor,
   ArtifactStatus,
@@ -66,39 +67,6 @@ function promptPosition(rect: DOMRect): { top: number; left: number } {
 function responseMessage(data: unknown, fallback: string): string {
   if (data && typeof data === "object" && "error" in data && typeof data.error === "string") return data.error;
   return fallback;
-}
-
-function rangeIntersects(range: Range, element: Element): boolean {
-  try {
-    return range.intersectsNode(element);
-  } catch {
-    return false;
-  }
-}
-
-function collectSelectionContext(
-  range: Range,
-  article: HTMLElement,
-  sections: ScanSection[],
-): { context: SelectionContext; source?: ScanSection } {
-  const intersected = sections.filter((section) => {
-    const element = article.querySelector(section.selector);
-    return element ? rangeIntersects(range, element) : false;
-  });
-  const headingCount = [...article.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter((heading) =>
-    rangeIntersects(range, heading),
-  ).length;
-  const elementTypes = [...new Set(intersected.map((section) => section.elementType))];
-  return {
-    source: intersected[0],
-    context: {
-      blockCount: Math.max(1, intersected.length),
-      sectionCount: Math.max(1, new Set(intersected.map((section) => section.section)).size),
-      headingCount,
-      documentCharacters: Math.max(1, sections.reduce((sum, section) => sum + section.text.length, 0)),
-      elementTypes: elementTypes.length > 0 ? elementTypes : ["paragraph"],
-    },
-  };
 }
 
 function hydrateReadyDescriptor(
@@ -627,12 +595,14 @@ export function ReaderShell({
     const captureSelection = () => {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
-      const text = selection.toString().replace(/\s+/g, " ").trim();
       const range = selection.getRangeAt(0);
       const start = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
       const element = start?.closest<HTMLElement>('[id^="p-"]');
-      const structural = collectSelectionContext(range, article, sourceDocument.sections);
-      const selector = element && article.contains(element) ? (`#${element.id}` as `#p-${number}`) : structural.source?.selector;
+      const structural = collectSelectionContext(range, article, sourceDocument.sections, selection.toString());
+      const text = structural.text;
+      const selector =
+        structural.source?.selector ??
+        (element && article.contains(element) ? (`#${element.id}` as `#p-${number}`) : undefined);
       if (!selector) return;
       const rangeRect = range.getBoundingClientRect();
       const fallbackElement = article.querySelector<HTMLElement>(selector);

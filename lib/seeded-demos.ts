@@ -2,6 +2,10 @@ import { extractArxivId } from "@/lib/target";
 import { GAUSSIAN_SPLATTING_HTML } from "@/lib/seeded-gaussian-splatting";
 import type { ScanSection, VisualizationBrief } from "@/lib/types";
 
+const INLINE_GAUSSIAN_SPLATTING_HTML = GAUSSIAN_SPLATTING_HTML
+  .replace("@media (max-width: 820px)", "@media (max-width: 560px)")
+  .replace("@media (max-width: 590px)", "@media (max-width: 520px)");
+
 export type SeededArtifact = {
   brief: VisualizationBrief;
   html: string;
@@ -34,6 +38,7 @@ header{display:flex;align-items:end;justify-content:space-between;gap:16px}h1{fo
 canvas{display:block;width:100%;height:100%;min-height:260px}.controls{display:flex;flex-wrap:wrap;gap:10px}.control{flex:1 1 180px;border:1px solid #294753;border-radius:12px;padding:9px 11px;background:#0b1921}
 label{display:flex;justify-content:space-between;gap:8px;color:#b7cdcf;font-size:12px}output{color:#75e7d1;font-family:ui-monospace,monospace}
 input[type=range]{width:100%;accent-color:#75e7d1}.caption{margin:0;color:#bdd0d2;font-size:13px;line-height:1.45}.caption strong{color:#fff}
+@media(min-width:540px){main{grid-template-columns:minmax(0,1.35fr) minmax(200px,.65fr);grid-template-rows:auto auto}header{grid-column:1/-1}.stage{grid-column:1;grid-row:2}main>section:last-of-type{grid-column:2;grid-row:2}.controls{display:grid;grid-template-columns:1fr}.control{min-width:0}}
 @media(max-width:560px){main{padding:12px}.stage,canvas{min-height:230px}}
 `;
 
@@ -260,7 +265,7 @@ const GAUSSIAN_SPLATTING_DEMOS: SeedDefinition[] = [
     script: "",
     vizKind: "3d-scene",
     render: "3d",
-    html: GAUSSIAN_SPLATTING_HTML.replaceAll(
+    html: INLINE_GAUSSIAN_SPLATTING_HTML.replaceAll(
       "Anisotropy and 3D Gaussian alignment with surfaces",
       "Anisotropy: 3D Gaussians align with surfaces",
     ),

@@ -2,6 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 
+export const ARTIFACT_HEIGHT_LIMITS = { min: 300, max: 1_200 } as const;
+
+export function normalizeArtifactHeight(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return Math.max(ARTIFACT_HEIGHT_LIMITS.min, Math.min(ARTIFACT_HEIGHT_LIMITS.max, Math.ceil(value)));
+}
+
 type ArtifactFrameProps = {
   html: string;
   title: string;
@@ -17,6 +24,7 @@ export function ArtifactFrame({ html, title, instant = false, onRuntimeFailure, 
   const readyRef = useRef(false);
   const failedRef = useRef(false);
   const [ready, setReady] = useState(false);
+  const [artifactHeight, setArtifactHeight] = useState<number | null>(null);
 
   useEffect(() => {
     failureRef.current = onRuntimeFailure;
@@ -30,8 +38,14 @@ export function ArtifactFrame({ html, title, instant = false, onRuntimeFailure, 
     readyRef.current = false;
     failedRef.current = false;
     setReady(false);
+    setArtifactHeight(null);
     const receive = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
+      if (event.data && typeof event.data === "object" && event.data.moire === "resize") {
+        const nextHeight = normalizeArtifactHeight(event.data.height);
+        if (nextHeight !== null) setArtifactHeight(nextHeight);
+        return;
+      }
       if (event.data && typeof event.data === "object" && event.data.ready === true) {
         readyRef.current = true;
         setReady(true);
@@ -67,7 +81,7 @@ export function ArtifactFrame({ html, title, instant = false, onRuntimeFailure, 
   }, [html]);
 
   return (
-    <div className="artifact-runtime">
+    <div className="artifact-runtime" style={artifactHeight === null ? undefined : { height: artifactHeight }}>
       {!ready && !instant ? <div className="runtime-status">◨ Starting the experiment…</div> : null}
       <iframe
         ref={iframeRef}

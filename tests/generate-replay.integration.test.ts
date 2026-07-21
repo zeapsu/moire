@@ -13,6 +13,7 @@ vi.mock("@/lib/artifact", () => {
     generateArtifact: generateArtifactMock,
     promoteArtifactTask: vi.fn(),
     repairRuntimeFailure: repairRuntimeFailureMock,
+    withArtifactCsp: (html: string) => html,
   };
 });
 

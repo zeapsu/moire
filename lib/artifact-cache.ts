@@ -207,6 +207,11 @@ function withServerRepairState(result: ArtifactResult, repairState: RepairState)
 }
 
 function envelope(record: ArtifactRecord, result: ArtifactResult, cached: boolean): CachedArtifactResult {
+  if (result.ok && !result.html.includes('data-moire-runtime-bridge="2"')) {
+    const html = withArtifactCsp(result.html, record.brief.render);
+    if (record.result?.ok && record.result.html === result.html) record.result = { ...record.result, html };
+    return { ...result, html, artifactId: record.artifactId, cached };
+  }
   return { ...result, artifactId: record.artifactId, cached };
 }
 

@@ -353,7 +353,7 @@ a { color: inherit; }
 .panel-references span { color: var(--dark-text-soft); }
 .panel-references span b { color: var(--dark-text-body); font-weight: 400; }
 
-.artifact-runtime { background: #0e1114; border: 1px solid var(--dark-border); overflow: hidden; position: relative; }
+.artifact-runtime { background: #0e1114; border: 1px solid var(--dark-border); box-sizing: content-box; overflow: hidden; position: relative; }
 .artifact-runtime iframe { border: 0; height: 100%; opacity: 0; transition: opacity 0.2s ease; width: 100%; }
 .artifact-runtime iframe.is-ready { opacity: 1; }
 .runtime-status { align-items: center; color: var(--dark-text-soft); display: flex; font-family: var(--mono); font-size: 9px; inset: 0; justify-content: center; letter-spacing: 0.14em; position: absolute; text-transform: uppercase; }

@@ -206,6 +206,7 @@ export function generatorInstructions(brief: VisualizationBrief): string {
   return [
     "Return exactly one complete self-contained HTML file beginning with <!doctype html>. Do not use Markdown fences or commentary.",
     "Use inline CSS and JavaScript. Make the visualization responsive, accessible, and legible on a dark canvas.",
+    "Keep controls and the visualization in normal document flow without fixed heights that clip content. Place controls beside the visualization when width allows and stack them at narrower widths; Moiré will size the inline frame to the resulting document height.",
     "Create a labeled input[type=range] with a unique id for every supplied parameter. Reference every id in JavaScript and bind an input event listener to visible behavior.",
     "Include a concise paragraph labeled 'What you're seeing' that explains the behavior in plain language.",
     "Use only technical terminology found in anchor.text_excerpt, grounding_terms, governing_math, and parameter symbols. Ordinary interface words are allowed, but do not coin technical labels, metaphors, or domain claims.",
@@ -258,8 +259,8 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
     `default-src 'none'; script-src 'unsafe-inline'${render === "3d" ? " https://cdn.jsdelivr.net" : ""}; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'`,
   );
   const bridge = document.createElement("script");
-  bridge.setAttribute("data-moire-runtime-bridge", "");
-  bridge.textContent = `(()=>{const send=(kind,message)=>window.parent.postMessage({moire:kind,message},'*');window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>send('runtime-error',String(event.message||'Artifact runtime error').slice(0,500)));window.addEventListener('unhandledrejection',(event)=>send('runtime-error',String(event.reason||'Unhandled artifact rejection').slice(0,500)))})();`;
+  bridge.setAttribute("data-moire-runtime-bridge", "2");
+  bridge.textContent = `(()=>{const send=(kind,detail={})=>window.parent.postMessage({moire:kind,...detail},'*');let lastHeight=0;const measure=()=>{const height=Math.ceil(Math.max(document.documentElement?.scrollHeight||0,document.body?.scrollHeight||0));if(height>0&&Math.abs(height-lastHeight)>1){lastHeight=height;send('resize',{height})}};const observe=()=>{measure();if('ResizeObserver'in window){const observer=new ResizeObserver(measure);observer.observe(document.documentElement);if(document.body)observer.observe(document.body);window.addEventListener('pagehide',()=>observer.disconnect(),{once:true})}window.addEventListener('load',measure,{once:true});requestAnimationFrame(measure)};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',observe,{once:true});else observe();window.addEventListener('keydown',(event)=>{if(event.key==='Escape')send('dismiss')});window.addEventListener('error',(event)=>send('runtime-error',{message:String(event.message||'Artifact runtime error').slice(0,500)}));window.addEventListener('unhandledrejection',(event)=>send('runtime-error',{message:String(event.reason||'Unhandled artifact rejection').slice(0,500)}))})();`;
   document.head.prepend(bridge);
   document.head.prepend(csp);
   return `<!doctype html>\n${document.documentElement.outerHTML}`;
