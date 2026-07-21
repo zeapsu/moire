@@ -7,6 +7,7 @@ const EXAMPLES = [
   { label: "Attention Is All You Need", tag: "arXiv", target: "1706.03762" },
   { label: "Double pendulum", tag: "Wikipedia", target: "https://en.wikipedia.org/wiki/Double_pendulum" },
   { label: "Defect formation in quenches", tag: "arXiv", target: "1811.05327" },
+  { label: "3D Gaussian Splatting", tag: "arXiv", target: "2308.04079" },
 ];
 
 export function HomeForm() {
