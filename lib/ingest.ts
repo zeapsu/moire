@@ -40,6 +40,26 @@ function safeAbsoluteUrl(value: string, baseUrl: string): string | null {
   }
 }
 
+function sameDocumentFragment(value: string, baseUrl: string): string | null {
+  try {
+    const base = new URL(baseUrl);
+    const target = new URL(value, base);
+    if (!target.hash) return null;
+    const exactDocument =
+      target.origin === base.origin && target.pathname === base.pathname && target.search === base.search;
+    const baseArxivId = extractArxivId(base.toString())?.replace(/v\d+$/i, "");
+    const targetArxivId = extractArxivId(target.toString())?.replace(/v\d+$/i, "");
+    const sameArxivHtml =
+      base.pathname.startsWith("/html/") &&
+      target.pathname.startsWith("/html/") &&
+      Boolean(baseArxivId && targetArxivId && baseArxivId === targetArxivId);
+    if (!exactDocument && !sameArxivHtml) return null;
+    return decodeURIComponent(target.hash.slice(1));
+  } catch {
+    return null;
+  }
+}
+
 function sectionLabel(element: Element): string {
   if (/^H[1-4]$/.test(element.tagName)) return element.textContent?.trim().slice(0, 120) || "Untitled section";
   let sibling = element.previousElementSibling;
@@ -108,10 +128,12 @@ export function sanitizeAndIndex(
     }
     element.id = stableId;
   });
-  document.querySelectorAll<HTMLAnchorElement>("a[href^='#']").forEach((anchor) => {
-    const fragment = anchor.getAttribute("href")?.slice(1) ?? "";
-    const stableId = sourceIds.get(fragment);
-    if (stableId) anchor.setAttribute("href", `#${stableId}`);
+  document.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
+    const fragment = sameDocumentFragment(anchor.getAttribute("href") ?? "", baseUrl);
+    if (!fragment) return;
+    const localId = sourceIds.get(fragment) ?? document.getElementById(fragment)?.id;
+    if (!localId) return;
+    anchor.setAttribute("href", `#${localId}`);
     anchor.removeAttribute("target");
     anchor.removeAttribute("rel");
   });
