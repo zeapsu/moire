@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export const ARTIFACT_HEIGHT_LIMITS = { min: 300, max: 1_200 } as const;
 
@@ -34,10 +34,10 @@ export function ArtifactFrame({ html, title, instant = false, onRuntimeFailure, 
     dismissRef.current = onDismiss;
   }, [onDismiss]);
 
-  useEffect(() => {
-    readyRef.current = false;
+  useLayoutEffect(() => {
+    readyRef.current = instant;
     failedRef.current = false;
-    setReady(false);
+    setReady(instant);
     setArtifactHeight(null);
     const receive = (event: MessageEvent) => {
       if (event.source !== iframeRef.current?.contentWindow) return;
@@ -68,17 +68,19 @@ export function ArtifactFrame({ html, title, instant = false, onRuntimeFailure, 
       }
     };
     window.addEventListener("message", receive);
-    const timeout = window.setTimeout(() => {
-      if (!readyRef.current && !failedRef.current) {
-        failedRef.current = true;
-        failureRef.current("The artifact did not send its ready handshake within 5 seconds.");
-      }
-    }, 5_000);
+    const timeout = instant
+      ? null
+      : window.setTimeout(() => {
+          if (!readyRef.current && !failedRef.current) {
+            failedRef.current = true;
+            failureRef.current("The artifact did not send its ready handshake within 5 seconds.");
+          }
+        }, 5_000);
     return () => {
       window.removeEventListener("message", receive);
-      window.clearTimeout(timeout);
+      if (timeout !== null) window.clearTimeout(timeout);
     };
-  }, [html]);
+  }, [html, instant]);
 
   return (
     <div className="artifact-runtime" style={artifactHeight === null ? undefined : { height: artifactHeight }}>
