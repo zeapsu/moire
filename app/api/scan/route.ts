@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { ArtifactCacheFullError, registerArtifactBriefs } from "@/lib/artifact-cache";
+import {
+  ArtifactCacheFullError,
+  primeCachedArtifacts,
+  registerArtifactBriefs,
+  synchronizeArtifactBriefs,
+} from "@/lib/artifact-cache";
 import { scanDocument } from "@/lib/scanner";
+import { seededArtifactsFor } from "@/lib/seeded-demos";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
 import { normalizeTarget, TargetError } from "@/lib/target";
 import { OpenAIConfigurationError } from "@/lib/openai";
@@ -53,17 +59,26 @@ export async function POST(request: Request) {
       }
       throw error;
     }
-    const briefs = await scanDocument(parsed.data.sections as Parameters<typeof scanDocument>[0]);
+    const sections = parsed.data.sections as Parameters<typeof scanDocument>[0];
+    const seeded = parsed.data.selection ? null : seededArtifactsFor(targetUrl, sections);
+    const briefs = seeded?.map((artifact) => artifact.brief) ?? (await scanDocument(sections));
     const variantKey = parsed.data.selection
       ? createHash("sha256")
           .update(`${parsed.data.sections[0].selector}\u0000${parsed.data.sections[0].text}`)
           .digest("hex")
           .slice(0, 24)
       : undefined;
-    const artifacts = registerArtifactBriefs(targetUrl, briefs, {
+    const registered = registerArtifactBriefs(targetUrl, briefs, {
       variantKey,
       kind: parsed.data.selection ? "selection" : "page",
     });
+    let artifacts = await synchronizeArtifactBriefs(registered);
+    if (seeded) {
+      artifacts = await primeCachedArtifacts(
+        artifacts,
+        new Map(artifacts.map((artifact, index) => [artifact.artifactId, seeded[index].html])),
+      );
+    }
     return NextResponse.json({ artifacts });
   } catch (error) {
     console.error("Brief scan failed", error);
