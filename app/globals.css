@@ -117,10 +117,11 @@ a { color: inherit; }
 }
 .example-item span { font-size: 8.5px; letter-spacing: 0.14em; }
 
-/* Static miniature of the reader.
-   ponytail: hand-built from board components; upgrade path is the real reader at 0.33 scale on a cached source. */
+/* Live reader preview; motion preference handling lives in HomeForm so reduced-motion
+   visitors do not download or autoplay the loop. */
 .home-miniature { display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.mini-frame { background: var(--paper); border: 1px solid var(--hairline-strong); box-shadow: 0 18px 44px rgba(28, 27, 24, 0.09); max-width: 480px; width: 100%; }
+.mini-frame { background: var(--paper); border: 1px solid var(--hairline-strong); box-shadow: 0 18px 44px rgba(28, 27, 24, 0.09); max-width: 480px; overflow: hidden; width: 100%; }
+.home-preview-video { aspect-ratio: 4 / 3; display: block; height: auto; object-fit: cover; pointer-events: none; width: 100%; }
 .mini-bar { align-items: center; background: var(--paper-raised); border-bottom: 1px solid var(--hairline); display: flex; gap: 8px; height: 28px; justify-content: space-between; padding: 0 12px; }
 .mini-bar .wordmark { font-size: 11px; }
 .mini-bar .wordmark span { font-size: 7px; }

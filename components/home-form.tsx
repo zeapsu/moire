@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { routeForTarget, TargetError } from "@/lib/target";
 
 const EXAMPLES = [
@@ -12,6 +12,30 @@ const EXAMPLES = [
 export function HomeForm() {
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
+  const [previewMotionAllowed, setPreviewMotionAllowed] = useState(false);
+  const previewRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const syncMotionPreference = () => setPreviewMotionAllowed(!reducedMotion.matches);
+
+    syncMotionPreference();
+    reducedMotion.addEventListener("change", syncMotionPreference);
+    return () => reducedMotion.removeEventListener("change", syncMotionPreference);
+  }, []);
+
+  useEffect(() => {
+    const preview = previewRef.current;
+    if (!preview) return;
+
+    if (previewMotionAllowed) {
+      void preview.play().catch(() => undefined);
+      return;
+    }
+
+    preview.pause();
+    preview.currentTime = 0;
+  }, [previewMotionAllowed]);
 
   function open(target: string) {
     try {
@@ -77,40 +101,22 @@ export function HomeForm() {
           </div>
         </section>
 
-        {/* ponytail: static miniature built from board components; upgrade path is the real
-            reader at 0.33 scale rendering a cached source. */}
+        {/* Actual cached reader interaction, kept decorative so the entry form remains the
+            single action on the page. Reduced-motion visitors see the first frame. */}
         <section className="home-miniature" aria-hidden="true">
           <div className="mini-frame">
-            <div className="top-hairline" />
-            <div className="mini-bar">
-              <span className="wordmark">Moiré <span>β</span></span>
-              <span className="mini-url">en.wikipedia.org/wiki/Double_pendulum</span>
-              <span className="mini-ext">↗</span>
-            </div>
-            <div className="mini-body">
-              <div className="mini-spine">
-                <i />
-                <b style={{ top: "16%" }} />
-                <b className="is-open" style={{ top: "42%" }} />
-                <b style={{ top: "76%" }} />
-              </div>
-              <div className="mini-page">
-                <div className="mini-greek"><i style={{ width: "100%" }} /><i style={{ width: "93%" }} /><i style={{ width: "55%" }} /></div>
-                <p>For large initial angles <span className="mini-mark">the motion of the double pendulum is chaotic</span> — nearby trajectories separate rapidly.</p>
-                <div className="mini-tether" />
-                <div className="mini-panel">
-                  <div className="mini-panel-hairline" />
-                  <div className="mini-panel-title">Motion of the double pendulum</div>
-                  <div className="mini-plot"><span>interactive plot — trace of the lower bob</span></div>
-                  <div className="mini-controls">
-                    <span>θ₁</span>
-                    <div className="mini-slider"><i /><b /></div>
-                    <span className="mini-value">120°</span>
-                  </div>
-                </div>
-                <div className="mini-greek" style={{ marginBottom: 0 }}><i style={{ width: "100%" }} /><i style={{ width: "96%" }} /><i style={{ width: "38%" }} /></div>
-              </div>
-            </div>
+            <video
+              ref={previewRef}
+              className="home-preview-video"
+              autoPlay={previewMotionAllowed}
+              loop
+              muted
+              playsInline
+              poster="/demo/reader-at-work-poster.jpg"
+              preload={previewMotionAllowed ? "metadata" : "none"}
+            >
+              <source src="/demo/reader-at-work.mp4" type="video/mp4" />
+            </video>
           </div>
           <span className="mini-caption">THE READER AT WORK — MARKS IN THE MARGIN, ONE EXPERIMENT OPEN</span>
         </section>
