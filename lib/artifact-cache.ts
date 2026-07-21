@@ -305,6 +305,14 @@ export async function primeCachedArtifacts(
   );
 }
 
+export function readyCachedArtifacts(descriptors: ArtifactDescriptor[]): CachedArtifactResult[] {
+  return descriptors.flatMap((candidate) => {
+    const record = store.byId.get(candidate.artifactId);
+    if (!record?.result?.ok || record.status !== "ready") return [];
+    return [envelope(record, withServerRepairState(record.result, record.repairState), true)];
+  });
+}
+
 export async function generateCachedArtifact(
   artifactId: string,
   priority: ArtifactPriority = "interactive",

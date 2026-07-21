@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   ArtifactCacheFullError,
   primeCachedArtifacts,
+  readyCachedArtifacts,
   registerArtifactBriefs,
   synchronizeArtifactBriefs,
 } from "@/lib/artifact-cache";
@@ -79,7 +80,10 @@ export async function POST(request: Request) {
         new Map(artifacts.map((artifact, index) => [artifact.artifactId, seeded[index].html])),
       );
     }
-    return NextResponse.json({ artifacts });
+    return NextResponse.json({
+      artifacts,
+      readyArtifacts: readyCachedArtifacts(artifacts.slice(0, 3)),
+    });
   } catch (error) {
     console.error("Brief scan failed", error);
     if (error instanceof ArtifactCacheFullError) {

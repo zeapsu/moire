@@ -50,6 +50,20 @@ function responseMessage(data: unknown, fallback: string): string {
   return fallback;
 }
 
+function hydrateReadyDescriptor(
+  cache: Map<string, StoredArtifact>,
+  descriptor: ArtifactDescriptor,
+  readyArtifacts: CachedArtifactResult[] = [],
+): ArtifactDescriptor {
+  const result = readyArtifacts.find((candidate) => candidate.artifactId === descriptor.artifactId);
+  if (result?.ok === true && typeof result.html === "string" && result.repairState) {
+    cache.set(descriptor.artifactId, { html: result.html, repairState: result.repairState });
+  }
+  return descriptor.status === "ready" && !cache.has(descriptor.artifactId)
+    ? { ...descriptor, status: "idle" }
+    : descriptor;
+}
+
 export function ReaderShell({
   document: sourceDocument,
   aiEnabled = true,
@@ -208,11 +222,19 @@ export function ReaderShell({
           body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, sections: sourceDocument.sections }),
           signal: controller.signal,
         });
-        const data = (await response.json()) as { artifacts?: ArtifactDescriptor[]; error?: string };
+        const data = (await response.json()) as {
+          artifacts?: ArtifactDescriptor[];
+          readyArtifacts?: CachedArtifactResult[];
+          error?: string;
+        };
         if (!response.ok || !data.artifacts) throw new Error(data.error || "The page scan failed.");
-        setArtifacts(data.artifacts);
+        const browserArtifacts = data.artifacts.map((descriptor) =>
+          hydrateReadyDescriptor(resultCache.current, descriptor, data.readyArtifacts),
+        );
+        setArtifacts(browserArtifacts);
         setScanState("ready");
-        for (const descriptor of data.artifacts.slice(0, 3)) {
+        for (const descriptor of browserArtifacts.slice(0, 3)) {
+          if (resultCache.current.has(descriptor.artifactId)) continue;
           void requestArtifact(descriptor, { intent: "prefetch", open: false });
         }
       } catch (error) {
@@ -394,12 +416,16 @@ export function ReaderShell({
           body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, selection: true, sections: [section] }),
           signal: controller.signal,
         });
-        const data = (await response.json()) as { artifacts?: ArtifactDescriptor[]; error?: string };
+        const data = (await response.json()) as {
+          artifacts?: ArtifactDescriptor[];
+          readyArtifacts?: CachedArtifactResult[];
+          error?: string;
+        };
         if (controller.signal.aborted || requestId !== activeRequestId.current) return;
         if (!response.ok || !data.artifacts) throw new Error(data.error || "The selected passage could not be scanned.");
-        const descriptor = data.artifacts[0];
-        if (!descriptor) throw new Error("This selection did not yield a useful interactive view.");
-        openArtifact(descriptor, true);
+        const scanned = data.artifacts[0];
+        if (!scanned) throw new Error("This selection did not yield a useful interactive view.");
+        openArtifact(hydrateReadyDescriptor(resultCache.current, scanned, data.readyArtifacts), true);
       } catch (error) {
         if (controller.signal.aborted || requestId !== activeRequestId.current) return;
         setView({
@@ -455,12 +481,16 @@ export function ReaderShell({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, selection: true, sections: [section] }),
         });
-        const data = (await response.json()) as { artifacts?: ArtifactDescriptor[]; error?: string };
+        const data = (await response.json()) as {
+          artifacts?: ArtifactDescriptor[];
+          readyArtifacts?: CachedArtifactResult[];
+          error?: string;
+        };
         if (requestId !== activeRequestId.current) return;
         if (!response.ok || !data.artifacts?.[0]) {
           throw new Error(data.error || "The saved selection could not be registered again.");
         }
-        const replacement = data.artifacts[0];
+        const replacement = hydrateReadyDescriptor(resultCache.current, data.artifacts[0], data.readyArtifacts);
         setNotebook((current) =>
           current.map((candidate) =>
             candidate.artifactId === entry.artifactId

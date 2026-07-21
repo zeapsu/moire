@@ -33,6 +33,7 @@ vi.mock("@/lib/artifact", () => ({
 import {
   ArtifactNotFoundError,
   generateCachedArtifact,
+  readyCachedArtifacts,
   registerArtifactBriefs,
   repairCachedArtifact,
   resetArtifactCacheForTests,
@@ -109,6 +110,24 @@ describe("server-owned artifact cache", () => {
       ok: true,
       cached: true,
     });
+    expect(generateArtifactMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns ready HTML for browser hydration without another generation", async () => {
+    generateArtifactMock.mockResolvedValue(validResult);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+
+    expect(readyCachedArtifacts(registered)).toEqual([]);
+    await generateCachedArtifact(registered[0].artifactId, "prefetch");
+
+    expect(readyCachedArtifacts(registered)).toMatchObject([
+      {
+        artifactId: registered[0].artifactId,
+        ok: true,
+        html: validResult.html,
+        cached: true,
+      },
+    ]);
     expect(generateArtifactMock).toHaveBeenCalledTimes(1);
   });
 
