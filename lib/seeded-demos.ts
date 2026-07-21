@@ -1,4 +1,5 @@
 import { extractArxivId } from "@/lib/target";
+import { GAUSSIAN_SPLATTING_HTML } from "@/lib/seeded-gaussian-splatting";
 import type { ScanSection, VisualizationBrief } from "@/lib/types";
 
 export type SeededArtifact = {
@@ -18,6 +19,9 @@ type SeedDefinition = {
   controls: string;
   stage?: string;
   script: string;
+  vizKind?: VisualizationBrief["viz_kind"];
+  render?: VisualizationBrief["render"];
+  html?: string;
 };
 
 const ARTIFACT_CSS = `
@@ -74,8 +78,8 @@ function instantiate(definitions: SeedDefinition[], sections: ScanSection[]): Se
         },
         title: definition.title,
         concept: definition.concept,
-        viz_kind: "simulation",
-        render: "2d",
+        viz_kind: definition.vizKind ?? "simulation",
+        render: definition.render ?? "2d",
         governing_math: definition.governingMath,
         grounding_terms: definition.groundingTerms,
         references: [],
@@ -83,7 +87,7 @@ function instantiate(definitions: SeedDefinition[], sections: ScanSection[]): Se
         expected_behavior: definition.expectedBehavior,
         score: 0.99 - index * 0.02,
       },
-      html: artifactHtml(definition),
+      html: definition.html ?? artifactHtml(definition),
     });
   }
   return artifacts.length > 0 ? artifacts : null;
@@ -227,10 +231,47 @@ angle.addEventListener('input',reset);difference.addEventListener('input',reset)
   },
 ];
 
+const GAUSSIAN_SPLATTING_DEMOS: SeedDefinition[] = [
+  {
+    title: "Anisotropy: 3D Gaussians align with surfaces",
+    concept:
+      "The full covariance matrix lets 3D Gaussians align with surfaces while a single scalar value controls the same radius on all three axes.",
+    needles: ["full covariance matrix", "single scalar value", "align with surfaces"],
+    governingMath: "Full covariance matrix compared with a single scalar value",
+    groundingTerms: [
+      "full covariance matrix",
+      "3D Gaussians",
+      "single scalar value",
+      "radius of the 3D Gaussian on all three axes",
+      "anisotropy",
+      "align with surfaces",
+      "same number of points",
+    ],
+    parameters: [
+      { name: "Number of points", symbol: "P", default: 5000, min: 1000, max: 10_000, unit: "points" },
+      { name: "Radius", symbol: "r", default: 0.1, min: 0.01, max: 0.5, unit: "scene units" },
+      { name: "Anisotropy", symbol: "a", default: 1, min: 0.1, max: 5, unit: "ratio" },
+    ],
+    expectedBehavior:
+      "Changing anisotropy changes how the full covariance matrix 3D Gaussians align with surfaces; the single scalar value keeps the radius equal on all three axes.",
+    caption:
+      "Both sides keep the same number of points. The full covariance matrix changes anisotropy so the 3D Gaussians align with surfaces; the single scalar value uses the same radius on all three axes.",
+    controls: "",
+    script: "",
+    vizKind: "3d-scene",
+    render: "3d",
+    html: GAUSSIAN_SPLATTING_HTML.replaceAll(
+      "Anisotropy and 3D Gaussian alignment with surfaces",
+      "Anisotropy: 3D Gaussians align with surfaces",
+    ),
+  },
+];
+
 export function seededArtifactsFor(targetUrl: string, sections: ScanSection[]): SeededArtifact[] | null {
   const arxivId = extractArxivId(targetUrl);
   if (arxivId?.replace(/v\d+$/i, "") === "1706.03762") return instantiate(ATTENTION_DEMOS, sections);
   if (arxivId?.replace(/v\d+$/i, "") === "1811.05327") return instantiate(PHYSICS_DEMOS, sections);
+  if (arxivId?.replace(/v\d+$/i, "") === "2308.04079") return instantiate(GAUSSIAN_SPLATTING_DEMOS, sections);
 
   const url = new URL(targetUrl);
   if (url.hostname.toLowerCase().endsWith("wikipedia.org") && url.pathname.toLowerCase() === "/wiki/double_pendulum") {

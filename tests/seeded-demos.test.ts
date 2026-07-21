@@ -56,6 +56,17 @@ describe("curated demo registry", () => {
     );
   });
 
+  it("provides the validated Three.js Gaussian Splatting artifact without a model call", () => {
+    const source = sections([
+      "An important algorithmic choice in our method is the optimization of the full covariance matrix for the 3D Gaussians. To demonstrate the effect of this choice, we perform an ablation where we remove anisotropy by optimizing a single scalar value that controls the radius of the 3D Gaussian on all three axes. We observe that the anisotropy significantly improves the quality of the 3D Gaussians' ability to align with surfaces, which in turn allows for much higher rendering quality while maintaining the same number of points.",
+    ]);
+    expectValidSeed("https://arxiv.org/abs/2308.04079", source, 1);
+    const seeded = seededArtifactsFor("https://arxiv.org/abs/2308.04079", source);
+    expect(seeded?.[0].brief).toMatchObject({ viz_kind: "3d-scene", render: "3d" });
+    expect(seeded?.[0].html).toContain("three@0.181.2");
+    expect(seeded?.[0].html).not.toContain("data-moire-runtime-bridge");
+  });
+
   it("leaves arbitrary pages on the model-backed general path", () => {
     expect(seededArtifactsFor("https://example.com/article", sections(["A useful equation."]))).toBeNull();
   });
