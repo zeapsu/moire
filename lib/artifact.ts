@@ -1,6 +1,22 @@
 import { JSDOM } from "jsdom";
-import { getOpenAI } from "@/lib/openai";
-import { emptyRepairState, type ArtifactResult, type ArtifactValidation, type RepairStage, type RepairState, type VisualizationBrief } from "@/lib/types";
+import type { Response as ModelResponse, ResponseCreateParamsNonStreaming } from "openai/resources/responses/responses";
+import {
+  ARTIFACT_MAX_OUTPUT_TOKENS,
+  ARTIFACT_OUTPUT_LIMIT_RETRY_TOKENS,
+  ARTIFACT_REASONING_EFFORT,
+  getModelGateway,
+  MODEL_ROUTES,
+} from "@/lib/model-gateway";
+import {
+  emptyRepairState,
+  MAX_ARTIFACT_MODEL_CALLS,
+  modelCallsUsed,
+  type ArtifactResult,
+  type ArtifactValidation,
+  type RepairStage,
+  type RepairState,
+  type VisualizationBrief,
+} from "@/lib/types";
 
 export const THREE_JS_URL = "https://cdn.jsdelivr.net/npm/three@0.181.2/build/three.module.js";
 export const SVG_NAMESPACE_URL = "http://www.w3.org/2000/svg";
@@ -288,14 +304,49 @@ export function generatorInstructions(brief: VisualizationBrief): string {
   ].join("\n");
 }
 
-async function callGenerator(instructions: string): Promise<string> {
-  const response = await getOpenAI().responses.create({
-    model: "gpt-5.6-sol",
-    reasoning: { effort: "high" },
-    max_output_tokens: 20_000,
+type OpenRouterResponseParams = ResponseCreateParamsNonStreaming & { models?: string[] };
+type GeneratorMode = "initial" | "output-limit-retry" | "output-limit-fallback" | "repair";
+type GeneratorCall = { html: string; model: string; outputLimited: boolean };
+
+function responseHitOutputLimit(response: ModelResponse): boolean {
+  const routed = response as ModelResponse & {
+    finish_reason?: unknown;
+    native_finish_reason?: unknown;
+    openrouter_metadata?: { finish_reason?: unknown; native_finish_reason?: unknown };
+  };
+  const reasons = [
+    response.incomplete_details?.reason,
+    routed.finish_reason,
+    routed.native_finish_reason,
+    routed.openrouter_metadata?.finish_reason,
+    routed.openrouter_metadata?.native_finish_reason,
+  ]
+    .filter((reason): reason is string => typeof reason === "string")
+    .map((reason) => reason.trim().toLowerCase().replaceAll("-", "_"));
+  return reasons.some((reason) => ["length", "max_tokens", "max_output_tokens"].includes(reason));
+}
+
+async function callGenerator(instructions: string, mode: GeneratorMode): Promise<GeneratorCall> {
+  const outputLimitRecovery = mode === "output-limit-retry" || mode === "output-limit-fallback";
+  const model =
+    mode === "repair"
+      ? MODEL_ROUTES.repair
+      : mode === "output-limit-fallback"
+        ? MODEL_ROUTES.fallback
+        : MODEL_ROUTES.artifact;
+  const request: OpenRouterResponseParams = {
+    model,
+    ...(mode === "output-limit-fallback" ? {} : { models: [MODEL_ROUTES.fallback] }),
+    reasoning: { effort: ARTIFACT_REASONING_EFFORT },
+    max_output_tokens: outputLimitRecovery ? ARTIFACT_OUTPUT_LIMIT_RETRY_TOKENS : ARTIFACT_MAX_OUTPUT_TOKENS,
     input: instructions,
-  });
-  return response.output_text.trim();
+  };
+  const response = await getModelGateway().responses.create(request);
+  return {
+    html: response.output_text.trim(),
+    model: response.model,
+    outputLimited: responseHitOutputLimit(response),
+  };
 }
 
 async function repairOnce(
@@ -303,7 +354,7 @@ async function repairOnce(
   invalidHtml: string,
   stage: RepairStage,
   errors: string[],
-): Promise<string> {
+): Promise<GeneratorCall> {
   const prior = new JSDOM(invalidHtml);
   prior.window.document
     .querySelectorAll("meta[data-moire-csp],script[data-moire-runtime-bridge],style[data-moire-layout-contract]")
@@ -311,6 +362,7 @@ async function repairOnce(
   const failureContext = stage === "validation" ? "server-side contract validation" : "browser execution";
   return callGenerator(
     `${generatorInstructions(brief)}\n\nThe prior attempt below failed ${failureContext}. Repair it and return a full replacement HTML file.\n${stage === "validation" ? "Validation" : "Runtime"} diagnostics:\n- ${errors.join("\n- ")}\n<invalid_artifact>\n${prior.serialize()}\n</invalid_artifact>`,
+    "repair",
   );
 }
 
@@ -343,6 +395,10 @@ export function withArtifactCsp(html: string, render: "2d" | "3d"): string {
 
 function recordFailure(state: RepairState, stage: RepairStage, message: string): RepairState {
   return { ...state, lastFailure: { stage, message: message.slice(0, 2000) } };
+}
+
+function afterModelCall(state: RepairState): RepairState {
+  return { ...state, modelCalls: Math.min(MAX_ARTIFACT_MODEL_CALLS, modelCallsUsed(state) + 1) };
 }
 
 function validateForDelivery(
@@ -380,18 +436,59 @@ export async function generateArtifact(
   queueKey?: string,
 ): Promise<ArtifactResult> {
   return runArtifactTask(async () => {
-    const initialState = emptyRepairState();
-    const initial = await callGenerator(generatorInstructions(brief));
-    const initialValidation = validateForDelivery(initial, brief.render, brief.parameters.length);
-    if (initialValidation.ok) return successfulArtifact(initial, brief.render, initialState);
+    const instructions = generatorInstructions(brief);
+    let state = afterModelCall(emptyRepairState());
+    let generated = await callGenerator(instructions, "initial");
+    if (generated.outputLimited) {
+      state = recordFailure(state, "generation", "Initial generation reached its 20,000-token output limit.");
+      generated = await callGenerator(instructions, "output-limit-retry");
+      state = afterModelCall(state);
+      if (generated.outputLimited) {
+        state = recordFailure(state, "generation", "The 32,000-token regeneration also reached its output limit.");
+        if (generated.model.includes("gpt-5.6-terra")) {
+          return {
+            ok: false,
+            error: "The visualization reached its output limit after the bounded regeneration.",
+            repairState: state,
+          };
+        }
+        generated = await callGenerator(instructions, "output-limit-fallback");
+        state = afterModelCall(state);
+        if (generated.outputLimited) {
+          return {
+            ok: false,
+            error: "The visualization reached its output limit after the bounded Terra fallback.",
+            repairState: recordFailure(state, "generation", "The Terra fallback reached its 32,000-token output limit."),
+          };
+        }
+      }
+    }
+
+    const initialValidation = validateForDelivery(generated.html, brief.render, brief.parameters.length);
+    if (initialValidation.ok) return successfulArtifact(generated.html, brief.render, state);
+    if (modelCallsUsed(state) >= MAX_ARTIFACT_MODEL_CALLS) {
+      return {
+        ok: false,
+        error: `The visualization failed its safety checks after output-limit recovery: ${initialValidation.errors.join(" ")}`,
+        repairState: recordFailure(state, "validation", initialValidation.errors.join(" ")),
+      };
+    }
 
     const validationRepairState: RepairState = {
       attempts: { validation: 1, runtime: 0 },
       lastFailure: { stage: "validation", message: initialValidation.errors.join(" ").slice(0, 2000) },
+      modelCalls: modelCallsUsed(state) + 1,
     };
-    const repaired = await repairOnce(brief, initial, "validation", initialValidation.errors);
-    const repairedValidation = validateForDelivery(repaired, brief.render, brief.parameters.length);
-    if (repairedValidation.ok) return successfulArtifact(repaired, brief.render, validationRepairState);
+    const repaired = await repairOnce(brief, generated.html, "validation", initialValidation.errors);
+    if (repaired.outputLimited) {
+      return {
+        ok: false,
+        error: "The visualization repair reached its output limit.",
+        repairState: recordFailure(validationRepairState, "generation", "The validation repair reached its output limit."),
+      };
+    }
+    const repairedValidation = validateForDelivery(repaired.html, brief.render, brief.parameters.length);
+    if (repairedValidation.ok) return successfulArtifact(repaired.html, brief.render, validationRepairState);
     const terminalState = recordFailure(validationRepairState, "validation", repairedValidation.errors.join(" "));
     return {
       ok: false,
@@ -408,18 +505,26 @@ export async function repairRuntimeFailure(
   priorState: RepairState,
 ): Promise<ArtifactResult> {
   const failureState = recordFailure(priorState, "runtime", runtimeError);
-  if (priorState.attempts.runtime === 1) {
+  if (priorState.attempts.runtime === 1 || modelCallsUsed(priorState) >= MAX_ARTIFACT_MODEL_CALLS) {
     return { ok: false, error: "The visualization could not start after its runtime repair.", repairState: failureState };
   }
   return runArtifactTask(async () => {
     const runtimeRepairState: RepairState = {
       attempts: { validation: priorState.attempts.validation, runtime: 1 },
       lastFailure: failureState.lastFailure,
+      modelCalls: modelCallsUsed(priorState) + 1,
     };
     const repaired = await repairOnce(brief, invalidHtml, "runtime", [runtimeError]);
-    const validation = validateForDelivery(repaired, brief.render, brief.parameters.length);
+    if (repaired.outputLimited) {
+      return {
+        ok: false,
+        error: "The visualization runtime repair reached its output limit.",
+        repairState: recordFailure(runtimeRepairState, "generation", "The runtime repair reached its output limit."),
+      };
+    }
+    const validation = validateForDelivery(repaired.html, brief.render, brief.parameters.length);
     return validation.ok
-      ? successfulArtifact(repaired, brief.render, runtimeRepairState)
+      ? successfulArtifact(repaired.html, brief.render, runtimeRepairState)
       : {
           ok: false,
           error: `The visualization failed after its runtime repair: ${validation.errors.join(" ")}`,

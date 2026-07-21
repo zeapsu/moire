@@ -1,16 +1,21 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getOpenAI } from "@/lib/openai";
+import { getModelGateway } from "@/lib/model-gateway";
 import { generatorInstructions, validateArtifact, withArtifactCsp } from "@/lib/artifact";
 import { ingestTarget } from "@/lib/ingest";
 import { seededArtifactsFor } from "@/lib/seeded-demos";
 import type { VisualizationBrief } from "@/lib/types";
 
-const DEFAULT_MODEL = "gpt-5.6-sol";
+const DEFAULT_MODEL = "openai/gpt-5.6-sol";
 const DEFAULT_REASONING_EFFORT = "high" as const;
 const MAX_ARTIFACT_BYTES = 200 * 1024;
 const DEFAULT_MAX_CONCURRENCY = 2;
-const ALLOWED_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const;
+const ALLOWED_MODELS = [
+  "x-ai/grok-4.5",
+  "openai/gpt-5.6-sol",
+  "openai/gpt-5.6-terra",
+  "openai/gpt-5.6-luna",
+] as const;
 const ALLOWED_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 const TARGETS = [
   "https://arxiv.org/abs/1706.03762",
@@ -148,7 +153,7 @@ async function callModel(
   options: Pick<GenerationOptions, "model" | "reasoningEffort">,
 ): Promise<{ html: string; metric: CallMetric }> {
   const startedAt = performance.now();
-  const response = await getOpenAI().responses.create({
+  const response = await getModelGateway().responses.create({
     model: options.model,
     reasoning: { effort: options.reasoningEffort },
     max_output_tokens: 20_000,

@@ -86,7 +86,7 @@ export type ArtifactValidation = {
   bytes: number;
 };
 
-export const repairStageSchema = z.enum(["validation", "runtime"]);
+export const repairStageSchema = z.enum(["generation", "validation", "runtime"]);
 
 export const repairStateSchema = z
   .object({
@@ -103,14 +103,20 @@ export const repairStateSchema = z
       })
       .strict()
       .nullable(),
+    modelCalls: z.number().int().min(0).max(3).optional(),
   })
   .strict();
 
 export type RepairStage = z.infer<typeof repairStageSchema>;
 export type RepairState = z.infer<typeof repairStateSchema>;
+export const MAX_ARTIFACT_MODEL_CALLS = 3;
+
+export function modelCallsUsed(state: RepairState): number {
+  return state.modelCalls ?? Math.min(MAX_ARTIFACT_MODEL_CALLS, 1 + state.attempts.validation + state.attempts.runtime);
+}
 
 export function emptyRepairState(): RepairState {
-  return { attempts: { validation: 0, runtime: 0 }, lastFailure: null };
+  return { attempts: { validation: 0, runtime: 0 }, lastFailure: null, modelCalls: 0 };
 }
 
 export type ArtifactResult =

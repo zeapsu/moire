@@ -15,8 +15,8 @@ You can also paste an arXiv ID or any public `http`/`https` page with readable a
 ## How it works
 
 1. The server safely fetches a page, preserves arXiv's LaTeXML structure when available, sanitizes it, and assigns stable source anchors.
-2. A low-reasoning GPT-5.6 scanner identifies up to six high-value concepts and returns typed visualization briefs tied to exact source selectors.
-3. Moiré speculatively generates the top briefs while the reader continues through the original paper. A high-reasoning GPT-5.6 generator produces one self-contained HTML artifact per brief.
+2. A low-reasoning GPT-5.6 Luna scanner identifies up to six high-value concepts and returns typed visualization briefs tied to exact source selectors.
+3. Moiré speculatively generates the top briefs while the reader continues through the original paper. Grok 4.5 produces one self-contained HTML artifact per brief through OpenRouter, with GPT-5.6 Terra as a request-failure fallback and GPT-5.6 Sol reserved for contract or browser-runtime repairs.
 4. The server validates the artifact contract, network isolation, controls, and size. At most one validation repair and one browser-runtime repair are allowed, tracked independently with server-owned diagnostic state.
 5. The browser runs the result in a script-only sandbox with a restrictive CSP. Vercel Runtime Cache preserves opaque artifact records and expensive results across serverless functions and replays.
 
@@ -24,7 +24,7 @@ Source-page links that target another section of the same document stay inside M
 
 ## Local setup
 
-Requirements: Node.js 20.18.1 or newer and an OpenAI API key.
+Requirements: Node.js 20.18.1 or newer and an OpenRouter API key. Provider BYOK credentials are configured in OpenRouter rather than exposed to this application.
 
 ```bash
 npm install
@@ -35,10 +35,10 @@ npm run dev
 Set this value in `.env.local`:
 
 ```text
-OPENAI_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_key_here
 ```
 
-Then open `http://localhost:3000`. Set `MOIRE_QA_NO_AI=1` for ingestion and UI QA that must not call the OpenAI API.
+Then open `http://localhost:3000`. Set `MOIRE_QA_NO_AI=1` for ingestion and UI QA that must not call the model gateway.
 
 ## Verification
 
@@ -53,7 +53,7 @@ The test suite covers URL normalization, safe fetching, document ingestion, inte
 
 ## Build Week implementation
 
-The primary Codex task owns the architecture, implementation, integration, deployment, and acceptance work. GPT-5.6 is used in two product roles: a fast structured scanner and a high-reasoning artifact generator/repairer. GitHub issues, pull requests, and git history are the project record.
+The primary Codex task owns the architecture, implementation, integration, deployment, and acceptance work. GPT-5.6 is used for the structured scanner, fallback generation, difficult repairs, and the preserved Sol/high demo set; Grok 4.5 is the default artifact generator selected by the project bakeoff. GitHub issues, pull requests, and git history are the project record.
 
 ## Current constraints
 

@@ -12,7 +12,7 @@ import { scanDocument, scanSelection } from "@/lib/scanner";
 import { seededArtifactsFor } from "@/lib/seeded-demos";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
 import { normalizeTarget, TargetError } from "@/lib/target";
-import { OpenAIConfigurationError } from "@/lib/openai";
+import { ModelGatewayConfigurationError } from "@/lib/model-gateway";
 import { assessSelection, type SelectionContext, type SelectionFocusAssessment } from "@/lib/selection-policy";
 
 export const runtime = "nodejs";
@@ -125,8 +125,8 @@ export async function POST(request: Request) {
     if (error instanceof ArtifactCacheFullError) {
       return NextResponse.json({ error: error.message }, { status: 503, headers: { "retry-after": "15" } });
     }
-    if (error instanceof OpenAIConfigurationError) {
-      return NextResponse.json({ error: "Moiré is missing its OpenAI API key." }, { status: 500 });
+    if (error instanceof ModelGatewayConfigurationError) {
+      return NextResponse.json({ error: "Moiré is missing its OpenRouter API key." }, { status: 500 });
     }
     return NextResponse.json(
       { error: "The page scan failed. Try again." },

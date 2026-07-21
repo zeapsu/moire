@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const createResponse = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/openai", () => ({
-  getOpenAI: () => ({ responses: { create: createResponse } }),
+vi.mock("@/lib/model-gateway", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/model-gateway")>()),
+  getModelGateway: () => ({ responses: { create: createResponse } }),
 }));
 
 import { generateArtifact, repairRuntimeFailure } from "@/lib/artifact";
@@ -29,12 +30,106 @@ const invalidArtifact = "<html><body>invalid</body></html>";
 describe("stage-specific artifact repair policy", () => {
   beforeEach(() => createResponse.mockReset());
 
-  it("returns an untouched repair state when the initial artifact validates", async () => {
+  it("records the initial model call when the first artifact validates", async () => {
     createResponse.mockResolvedValueOnce({ output_text: validArtifact });
     const result = await generateArtifact(brief);
     expect(result.ok).toBe(true);
-    expect(result.repairState).toEqual(emptyRepairState());
+    expect(result.repairState).toEqual({ ...emptyRepairState(), modelCalls: 1 });
     expect(createResponse).toHaveBeenCalledTimes(1);
+    expect(createResponse.mock.calls[0]?.[0]).toMatchObject({
+      model: "x-ai/grok-4.5",
+      models: ["openai/gpt-5.6-terra"],
+      reasoning: { effort: "high" },
+      max_output_tokens: 20_000,
+    });
+  });
+
+  it.each([
+    ["Responses incomplete status", { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }],
+    ["OpenRouter length finish", { finish_reason: "length" }],
+    ["native max-tokens finish", { native_finish_reason: "MAX_TOKENS" }],
+  ])("regenerates truncated output from the original brief for %s", async (_label, signal) => {
+    createResponse
+      .mockResolvedValueOnce({ output_text: "<!doctype html><html>", model: "x-ai/grok-4.5", ...signal })
+      .mockResolvedValueOnce({ output_text: validArtifact, model: "x-ai/grok-4.5" });
+
+    const result = await generateArtifact(brief);
+
+    expect(result).toMatchObject({
+      ok: true,
+      repairState: {
+        attempts: { validation: 0, runtime: 0 },
+        modelCalls: 2,
+        lastFailure: { stage: "generation" },
+      },
+    });
+    expect(createResponse).toHaveBeenCalledTimes(2);
+    expect(createResponse.mock.calls[1]?.[0]).toMatchObject({
+      model: "x-ai/grok-4.5",
+      models: ["openai/gpt-5.6-terra"],
+      max_output_tokens: 32_000,
+      input: createResponse.mock.calls[0]?.[0]?.input,
+    });
+    expect(createResponse.mock.calls[1]?.[0]?.input).not.toContain("invalid_artifact");
+  });
+
+  it("falls back directly to Terra when the bounded 32k regeneration is also truncated", async () => {
+    const truncated = {
+      output_text: "<!doctype html><html>",
+      model: "x-ai/grok-4.5",
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+    };
+    createResponse
+      .mockResolvedValueOnce(truncated)
+      .mockResolvedValueOnce(truncated)
+      .mockResolvedValueOnce({ output_text: validArtifact, model: "openai/gpt-5.6-terra" });
+
+    const result = await generateArtifact(brief);
+
+    expect(result).toMatchObject({ ok: true, repairState: { modelCalls: 3 } });
+    expect(createResponse).toHaveBeenCalledTimes(3);
+    expect(createResponse.mock.calls[2]?.[0]).toMatchObject({
+      model: "openai/gpt-5.6-terra",
+      max_output_tokens: 32_000,
+      input: createResponse.mock.calls[0]?.[0]?.input,
+    });
+    expect(createResponse.mock.calls[2]?.[0]).not.toHaveProperty("models");
+    expect(createResponse.mock.calls[2]?.[0]?.input).not.toContain("invalid_artifact");
+
+    if (!result.ok) throw new Error(result.error);
+    const terminalRuntime = await repairRuntimeFailure(
+      brief,
+      result.html,
+      "Artifact failed after output-limit recovery.",
+      result.repairState,
+    );
+    expect(terminalRuntime).toMatchObject({ ok: false, repairState: { modelCalls: 3 } });
+    expect(createResponse).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses the normal Sol repair when a completed 32k regeneration is structurally invalid", async () => {
+    createResponse
+      .mockResolvedValueOnce({
+        output_text: "<!doctype html><html>",
+        model: "x-ai/grok-4.5",
+        status: "incomplete",
+        incomplete_details: { reason: "max_output_tokens" },
+      })
+      .mockResolvedValueOnce({ output_text: invalidArtifact, model: "x-ai/grok-4.5", status: "completed" })
+      .mockResolvedValueOnce({ output_text: validArtifact, model: "openai/gpt-5.6-sol" });
+
+    const result = await generateArtifact(brief);
+
+    expect(result).toMatchObject({
+      ok: true,
+      repairState: { attempts: { validation: 1, runtime: 0 }, modelCalls: 3 },
+    });
+    expect(createResponse.mock.calls[2]?.[0]).toMatchObject({
+      model: "openai/gpt-5.6-sol",
+      max_output_tokens: 20_000,
+    });
+    expect(createResponse.mock.calls[2]?.[0]?.input).toContain("invalid_artifact");
   });
 
   it("allows one validation repair and retains its diagnostic", async () => {
@@ -46,6 +141,12 @@ describe("stage-specific artifact repair policy", () => {
     expect(result.repairState.attempts).toEqual({ validation: 1, runtime: 0 });
     expect(result.repairState.lastFailure?.stage).toBe("validation");
     expect(createResponse).toHaveBeenCalledTimes(2);
+    expect(createResponse.mock.calls[1]?.[0]).toMatchObject({
+      model: "openai/gpt-5.6-sol",
+      models: ["openai/gpt-5.6-terra"],
+      reasoning: { effort: "high" },
+      max_output_tokens: 20_000,
+    });
   });
 
   it("allows a runtime repair after a validation repair, then makes a second runtime failure terminal", async () => {
@@ -71,6 +172,10 @@ describe("stage-specific artifact repair policy", () => {
     expect(createResponse).toHaveBeenCalledTimes(3);
     expect(createResponse.mock.calls[2]?.[0]?.input).toContain("failed browser execution");
     expect(createResponse.mock.calls[2]?.[0]?.input).toContain("Runtime diagnostics");
+    expect(createResponse.mock.calls[2]?.[0]).toMatchObject({
+      model: "openai/gpt-5.6-sol",
+      models: ["openai/gpt-5.6-terra"],
+    });
 
     if (!runtimeRepaired.ok) throw new Error(runtimeRepaired.error);
     const terminal = await repairRuntimeFailure(

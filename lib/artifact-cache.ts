@@ -12,10 +12,12 @@ import {
   type ArtifactPriority,
 } from "@/lib/artifact";
 import { normalizeTarget } from "@/lib/target";
-import { OpenAIConfigurationError } from "@/lib/openai";
+import { ModelGatewayConfigurationError } from "@/lib/model-gateway";
 import {
   briefSchema,
   emptyRepairState,
+  MAX_ARTIFACT_MODEL_CALLS,
+  modelCallsUsed,
   repairStateSchema,
   type ArtifactDescriptor,
   type ArtifactKind,
@@ -193,12 +195,9 @@ const repairDurableArtifact = unstable_cache(
     artifactId: string,
     brief: VisualizationBrief,
     invalidHtml: string,
-    validationAttempts: 0 | 1,
+    priorState: RepairState,
   ): Promise<ArtifactResult> =>
-    repairRuntimeFailure(brief, invalidHtml, "The artifact did not complete browser startup.", {
-      attempts: { validation: validationAttempts, runtime: 0 },
-      lastFailure: null,
-    }),
+    repairRuntimeFailure(brief, invalidHtml, "The artifact did not complete browser startup.", priorState),
   ["moire-artifact-runtime-repair-v1"],
   { revalidate: CACHE_TTL_SECONDS, tags: ["moire-artifacts"] },
 );
@@ -364,7 +363,7 @@ export async function generateCachedArtifact(
       return result;
     })
     .catch(async (error) => {
-      if (error instanceof ArtifactQueueFullError || error instanceof OpenAIConfigurationError) {
+      if (error instanceof ArtifactQueueFullError || error instanceof ModelGatewayConfigurationError) {
         record.status = "idle";
         await persistRecord(record);
         throw error;
@@ -400,7 +399,9 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
     record.result = withServerRepairState(current, record.repairState);
     return envelope(record, await record.repairPromise, true);
   }
-  if (record.repairState.attempts.runtime === 1) {
+  const runtimeAlreadyAttempted = record.repairState.attempts.runtime === 1;
+  const modelCallBudgetExhausted = modelCallsUsed(record.repairState) >= MAX_ARTIFACT_MODEL_CALLS;
+  if (runtimeAlreadyAttempted || modelCallBudgetExhausted) {
     record.repairState = { ...record.repairState, lastFailure: { stage: "runtime", message: diagnostic } };
     record.result = withServerRepairState(current, record.repairState);
     record.status = "ready";
@@ -408,7 +409,9 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
     await persistRecord(record);
     const terminalResult: ArtifactResult = {
       ok: false,
-      error: "The visualization could not start after its runtime repair.",
+      error: runtimeAlreadyAttempted
+        ? "The visualization could not start after its runtime repair."
+        : "The visualization could not start within its three-call model budget.",
       repairState: record.repairState,
     };
     return envelope(record, terminalResult, true);
@@ -418,6 +421,7 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
   record.repairState = {
     attempts: { validation: priorState.attempts.validation, runtime: 1 },
     lastFailure: { stage: "runtime", message: diagnostic },
+    modelCalls: modelCallsUsed(priorState) + 1,
   };
   record.result = withServerRepairState(current, record.repairState);
   record.status = "repairing";
@@ -425,13 +429,14 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
 
   const repair =
     process.env.VERCEL === "1"
-      ? repairDurableArtifact(record.artifactId, record.brief, current.html, priorState.attempts.validation)
+      ? repairDurableArtifact(record.artifactId, record.brief, current.html, priorState)
       : repairRuntimeFailure(record.brief, current.html, diagnostic, priorState);
   const work = repair
     .then(async (result) => {
       const authoritativeState: RepairState = {
         attempts: { validation: result.repairState.attempts.validation, runtime: 1 },
         lastFailure: result.ok ? record.repairState.lastFailure : result.repairState.lastFailure,
+        modelCalls: result.repairState.modelCalls,
       };
       const authoritativeResult = withServerRepairState(result, authoritativeState);
       record.repairState = authoritativeState;
@@ -442,10 +447,11 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
       return authoritativeResult;
     })
     .catch(async (error) => {
-      if (error instanceof ArtifactQueueFullError || error instanceof OpenAIConfigurationError) {
+      if (error instanceof ArtifactQueueFullError || error instanceof ModelGatewayConfigurationError) {
         const retryableState: RepairState = {
           attempts: priorState.attempts,
           lastFailure: record.repairState.lastFailure,
+          modelCalls: priorState.modelCalls,
         };
         record.repairState = retryableState;
         record.result = withServerRepairState(current, retryableState);

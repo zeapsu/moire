@@ -1,5 +1,5 @@
 import { zodTextFormat } from "openai/helpers/zod";
-import { getOpenAI } from "@/lib/openai";
+import { getModelGateway, MODEL_ROUTES } from "@/lib/model-gateway";
 import {
   briefBatchSchema,
   selectionScanSchema,
@@ -64,8 +64,8 @@ async function scanChunk(chunk: ScanSection[]): Promise<VisualizationBrief[]> {
     )
     .join("\n");
 
-  const response = await getOpenAI().responses.parse({
-    model: "gpt-5.6-luna",
+  const response = await getModelGateway().responses.parse({
+    model: MODEL_ROUTES.scanner,
     reasoning: { effort: "low" },
     instructions: scannerInstructions(),
     input: `Analyze these source elements and return JSON matching the requested schema.\n<page>\n${content}\n</page>`,
@@ -107,8 +107,8 @@ function groundedRankedBriefs(
 
 export async function scanSelection(section: ScanSection): Promise<SelectionScan> {
   const content = `<source selector="${section.selector}" section="${section.section.replaceAll('"', "&quot;")}" element_type="${section.elementType}">${section.text}</source>`;
-  const response = await getOpenAI().responses.parse({
-    model: "gpt-5.6-luna",
+  const response = await getModelGateway().responses.parse({
+    model: MODEL_ROUTES.scanner,
     reasoning: { effort: "low" },
     instructions: selectionScannerInstructions(),
     input: `Assess this selected source passage and return JSON matching the requested schema.\n<selection>\n${content}\n</selection>`,

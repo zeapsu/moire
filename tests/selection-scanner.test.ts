@@ -3,8 +3,9 @@ import type { VisualizationBrief } from "@/lib/types";
 
 const openAIMocks = vi.hoisted(() => ({ parse: vi.fn() }));
 
-vi.mock("@/lib/openai", () => ({
-  getOpenAI: () => ({ responses: { parse: openAIMocks.parse } }),
+vi.mock("@/lib/model-gateway", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/model-gateway")>()),
+  getModelGateway: () => ({ responses: { parse: openAIMocks.parse } }),
 }));
 
 import { scanSelection } from "@/lib/scanner";
@@ -51,7 +52,7 @@ describe("selection scanner", () => {
     expect(result.briefs[0].span_id).toBe("s-1");
     expect(openAIMocks.parse).toHaveBeenCalledOnce();
     expect(openAIMocks.parse.mock.calls[0][0]).toMatchObject({
-      model: "gpt-5.6-luna",
+      model: "openai/gpt-5.6-luna",
       reasoning: { effort: "low" },
     });
   });

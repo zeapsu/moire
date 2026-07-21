@@ -43,7 +43,7 @@ import {
   resetArtifactCacheForTests,
   synchronizeArtifactBriefs,
 } from "@/lib/artifact-cache";
-import { OpenAIConfigurationError } from "@/lib/openai";
+import { ModelGatewayConfigurationError } from "@/lib/model-gateway";
 import { emptyRepairState } from "@/lib/types";
 
 const brief: VisualizationBrief = {
@@ -320,6 +320,35 @@ describe("server-owned artifact cache", () => {
     expect(repairRuntimeFailureMock).toHaveBeenCalledTimes(1);
   });
 
+  it("does not start a runtime repair after output-limit recovery consumed all three model calls", async () => {
+    generateArtifactMock.mockResolvedValueOnce({
+      ...validResult,
+      repairState: {
+        attempts: { validation: 0, runtime: 0 },
+        lastFailure: { stage: "generation", message: "Terra completed the bounded fallback." },
+        modelCalls: 3,
+      },
+    });
+    const [{ artifactId }] = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await generateCachedArtifact(artifactId);
+
+    await expect(repairCachedArtifact(artifactId, "ready handshake timed out")).resolves.toMatchObject({
+      ok: false,
+      cached: true,
+      repairState: {
+        attempts: { validation: 0, runtime: 0 },
+        lastFailure: { stage: "runtime", message: "ready handshake timed out" },
+        modelCalls: 3,
+      },
+    });
+    expect(repairRuntimeFailureMock).not.toHaveBeenCalled();
+    await expect(generateCachedArtifact(artifactId)).resolves.toMatchObject({
+      ok: true,
+      cached: true,
+      repairState: { modelCalls: 3 },
+    });
+  });
+
   it("does not consume the runtime repair when the shared queue is temporarily full", async () => {
     const { ArtifactQueueFullError } = await import("@/lib/artifact");
     generateArtifactMock.mockResolvedValueOnce(validResult);
@@ -345,11 +374,11 @@ describe("server-owned artifact cache", () => {
 
   it("keeps a missing API key retryable without caching a terminal result", async () => {
     generateArtifactMock
-      .mockRejectedValueOnce(new OpenAIConfigurationError("not configured"))
+      .mockRejectedValueOnce(new ModelGatewayConfigurationError("not configured"))
       .mockResolvedValueOnce(validResult);
     const [{ artifactId }] = registerArtifactBriefs("https://example.com/paper", [brief]);
 
-    await expect(generateCachedArtifact(artifactId)).rejects.toBeInstanceOf(OpenAIConfigurationError);
+    await expect(generateCachedArtifact(artifactId)).rejects.toBeInstanceOf(ModelGatewayConfigurationError);
     await expect(generateCachedArtifact(artifactId)).resolves.toMatchObject({ ok: true, cached: false });
     expect(generateArtifactMock).toHaveBeenCalledTimes(2);
   });
