@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   generatorInstructions,
+  isIgnorableArtifactRuntimeError,
   SVG_NAMESPACE_URL,
   shouldUseStageFirstFallback,
   THREE_JS_URL,
@@ -43,6 +44,20 @@ describe("artifact validation", () => {
     expect(instructions).toContain("stage-first fallback");
     expect(instructions).toContain("Preserve mathematical notation");
     expect(instructions).toContain("text never overlaps");
+  });
+
+  it("ignores only browser-defined ResizeObserver loop notifications", () => {
+    expect(isIgnorableArtifactRuntimeError("ResizeObserver loop limit exceeded")).toBe(true);
+    expect(
+      isIgnorableArtifactRuntimeError("ResizeObserver loop completed with undelivered notifications."),
+    ).toBe(true);
+    expect(isIgnorableArtifactRuntimeError("ResizeObserver is not defined")).toBe(false);
+    expect(isIgnorableArtifactRuntimeError("Canvas initialization failed.")).toBe(false);
+
+    const secured = withArtifactCsp(valid2d, "2d");
+    expect(secured).toContain('data-moire-runtime-bridge="5"');
+    expect(secured).toContain("ignorableRuntimeError");
+    expect(secured).toContain("send('runtime-error'");
   });
 
   it("keeps Three.js out of the 2D generation contract", () => {
@@ -138,7 +153,7 @@ describe("artifact validation", () => {
     expect(secured).toContain("Content-Security-Policy");
     expect(secured).toContain("default-src 'none'");
     expect(secured).toContain("connect-src 'none'");
-    expect(secured).toContain('data-moire-runtime-bridge="4"');
+    expect(secured).toContain('data-moire-runtime-bridge="5"');
     expect(secured).toContain('data-moire-layout-contract="1"');
     expect(secured).toContain("ResizeObserver");
     expect(secured).toContain("send('resize',{height})");

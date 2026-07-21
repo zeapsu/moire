@@ -39,6 +39,7 @@ type ArtifactRecord = {
   kind: ArtifactKind;
   status: ArtifactStatus;
   repairState: RepairState;
+  seedHash?: string;
   result?: ArtifactResult;
   generationPromise?: Promise<ArtifactResult>;
   repairPromise?: Promise<ArtifactResult>;
@@ -91,6 +92,7 @@ function persistedRecord(value: unknown): PersistedArtifactRecord | null {
     (candidate.kind !== "page" && candidate.kind !== "selection") ||
     !["idle", "generating", "ready", "repairing", "error"].includes(candidate.status ?? "") ||
     typeof candidate.lastAccessedAt !== "number" ||
+    (candidate.seedHash !== undefined && typeof candidate.seedHash !== "string") ||
     !parsedBrief.success ||
     !repairStateSchema.safeParse(candidate.repairState).success
   ) {
@@ -295,6 +297,13 @@ export async function primeCachedArtifacts(
       const html = htmlByArtifact.get(candidate.artifactId);
       if (!record || !html) return candidate;
       record.brief = candidate.brief;
+      const seedHash = createHash("sha256").update(html).digest("hex");
+      if (record.seedHash === seedHash && record.result) {
+        record.lastAccessedAt = Date.now();
+        if (process.env.VERCEL === "1") await persistRecord(record);
+        return descriptor(record);
+      }
+      if (record.status === "generating" || record.status === "repairing") return descriptor(record);
       const validation = validateArtifact(html, record.brief.render, record.brief.parameters.length);
       if (!validation.ok) {
         throw new Error(`Curated artifact ${record.artifactId} is invalid: ${validation.errors.join(" ")}`);
@@ -304,6 +313,7 @@ export async function primeCachedArtifacts(
         throw new Error(`Curated artifact ${record.artifactId} exceeds the artifact size limit.`);
       }
       record.repairState = emptyRepairState();
+      record.seedHash = seedHash;
       record.result = { ok: true, html: secured, repairState: record.repairState };
       record.status = "ready";
       record.lastAccessedAt = Date.now();

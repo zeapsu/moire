@@ -24,7 +24,7 @@ vi.mock("@vercel/functions", () => ({
 vi.mock("next/cache", () => ({ unstable_cache: (work: unknown) => work }));
 
 vi.mock("@/lib/artifact", () => ({
-  ARTIFACT_RUNTIME_BRIDGE_VERSION: "4",
+  ARTIFACT_RUNTIME_BRIDGE_VERSION: "5",
   ArtifactQueueFullError: class ArtifactQueueFullError extends Error {},
   generateArtifact: generateArtifactMock,
   promoteArtifactTask: promoteArtifactTaskMock,
@@ -111,6 +111,50 @@ describe("server-owned artifact cache", () => {
 
     expect(primed.brief.title).toBe("Grounded title");
     expect(primed.brief.grounding_terms).toEqual(["useful passage"]);
+  });
+
+  it("does not reset an in-flight curated repair or replay its budget on a rescan", async () => {
+    const [registered] = registerArtifactBriefs("https://example.com/paper", [brief]);
+    const seedHtml = "<!doctype html><html><head></head><body>seed</body></html>";
+    await primeCachedArtifacts([registered], new Map([[registered.artifactId, seedHtml]]));
+
+    const repair = deferred<ArtifactResult>();
+    repairRuntimeFailureMock.mockReturnValueOnce(repair.promise);
+    const repairing = repairCachedArtifact(registered.artifactId, "ResizeObserver loop limit exceeded");
+
+    const [rescanned] = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await primeCachedArtifacts([rescanned], new Map([[registered.artifactId, seedHtml]]));
+
+    const repairedHtml = "<!doctype html><html><head></head><body>repaired</body></html>";
+    repair.resolve({
+      ok: true,
+      html: repairedHtml,
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "ResizeObserver loop limit exceeded" },
+      },
+    });
+
+    await expect(repairing).resolves.toMatchObject({
+      ok: true,
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "ResizeObserver loop limit exceeded" },
+      },
+    });
+
+    await primeCachedArtifacts([rescanned], new Map([[registered.artifactId, seedHtml]]));
+    expect(readyCachedArtifacts([rescanned])).toMatchObject([
+      {
+        ok: true,
+        html: repairedHtml,
+        repairState: {
+          attempts: { validation: 0, runtime: 1 },
+          lastFailure: { stage: "runtime", message: "ResizeObserver loop limit exceeded" },
+        },
+      },
+    ]);
+    expect(repairRuntimeFailureMock).toHaveBeenCalledTimes(1);
   });
 
   it("restores an artifact across isolated Vercel functions and reuses the durable result", async () => {
