@@ -3,6 +3,7 @@ import {
   briefSchema,
   type ArtifactDescriptor,
   type ArtifactKind,
+  type ScanSection,
   type VisualizationBrief,
 } from "@/lib/types";
 
@@ -16,8 +17,6 @@ const notebookEntrySchema = z
     savedAt: z.number().int().nonnegative(),
   })
   .strict();
-
-const notebookSchema = z.array(notebookEntrySchema).max(MAX_NOTEBOOK_ENTRIES);
 
 export type NotebookEntry = {
   artifactId: string;
@@ -33,11 +32,28 @@ export function notebookStorageKey(targetUrl: string): string {
 export function parseNotebook(value: string | null): NotebookEntry[] {
   if (!value) return [];
   try {
-    const parsed = notebookSchema.safeParse(JSON.parse(value));
-    return parsed.success ? parsed.data : [];
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((candidate) => notebookEntrySchema.safeParse(candidate))
+      .filter((candidate) => candidate.success)
+      .map((candidate) => candidate.data)
+      .slice(0, MAX_NOTEBOOK_ENTRIES);
   } catch {
     return [];
   }
+}
+
+export function notebookSelectionSection(entry: NotebookEntry): ScanSection | null {
+  if (entry.kind !== "selection") return null;
+  const selector = entry.brief.anchor.dom_selector;
+  if (!/^#p-\d+$/.test(selector)) return null;
+  return {
+    selector: selector as ScanSection["selector"],
+    section: entry.brief.anchor.section,
+    elementType: entry.brief.anchor.element_type,
+    text: entry.brief.anchor.text_excerpt,
+  };
 }
 
 export function addNotebookEntry(entries: NotebookEntry[], entry: NotebookEntry): NotebookEntry[] {

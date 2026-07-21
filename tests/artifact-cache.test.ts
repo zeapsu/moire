@@ -21,6 +21,7 @@ import {
   repairCachedArtifact,
   resetArtifactCacheForTests,
 } from "@/lib/artifact-cache";
+import { OpenAIConfigurationError } from "@/lib/openai";
 import { emptyRepairState } from "@/lib/types";
 
 const brief: VisualizationBrief = {
@@ -154,7 +155,7 @@ describe("server-owned artifact cache", () => {
     expect(generateArtifactMock).toHaveBeenCalledTimes(1);
   });
 
-  it("claims the runtime budget before awaiting and makes replays terminal", async () => {
+  it("deduplicates concurrent runtime repair and preserves a working artifact after the budget is exhausted", async () => {
     generateArtifactMock.mockResolvedValueOnce(validResult);
     const repair = deferred<ArtifactResult>();
     repairRuntimeFailureMock.mockReturnValueOnce(repair.promise);
@@ -164,14 +165,6 @@ describe("server-owned artifact cache", () => {
     const firstRepair = repairCachedArtifact(artifactId, "ready handshake timed out");
     const replay = repairCachedArtifact(artifactId, "replayed failure");
     expect(repairRuntimeFailureMock).toHaveBeenCalledTimes(1);
-    await expect(replay).resolves.toMatchObject({
-      ok: false,
-      cached: true,
-      repairState: {
-        attempts: { validation: 0, runtime: 1 },
-        lastFailure: { stage: "runtime", message: "replayed failure" },
-      },
-    });
 
     repair.resolve(validResult);
     await expect(firstRepair).resolves.toMatchObject({
@@ -182,16 +175,61 @@ describe("server-owned artifact cache", () => {
         lastFailure: { stage: "runtime", message: "replayed failure" },
       },
     });
+    await expect(replay).resolves.toMatchObject({
+      ok: true,
+      cached: true,
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "replayed failure" },
+      },
+    });
     await expect(repairCachedArtifact(artifactId, "failed after repair")).resolves.toMatchObject({
       ok: false,
       cached: true,
     });
     await expect(generateCachedArtifact(artifactId)).resolves.toMatchObject({
-      ok: false,
+      ok: true,
       cached: true,
-      repairState: { attempts: { validation: 0, runtime: 1 } },
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "failed after repair" },
+      },
     });
     expect(repairRuntimeFailureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not consume the runtime repair when the shared queue is temporarily full", async () => {
+    const { ArtifactQueueFullError } = await import("@/lib/artifact");
+    generateArtifactMock.mockResolvedValueOnce(validResult);
+    repairRuntimeFailureMock
+      .mockRejectedValueOnce(new ArtifactQueueFullError("queue full"))
+      .mockResolvedValueOnce(validResult);
+    const [{ artifactId }] = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await generateCachedArtifact(artifactId);
+
+    await expect(repairCachedArtifact(artifactId, "first runtime failure")).rejects.toBeInstanceOf(
+      ArtifactQueueFullError,
+    );
+    await expect(repairCachedArtifact(artifactId, "retry after queue clears")).resolves.toMatchObject({
+      ok: true,
+      cached: false,
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "retry after queue clears" },
+      },
+    });
+    expect(repairRuntimeFailureMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a missing API key retryable without caching a terminal result", async () => {
+    generateArtifactMock
+      .mockRejectedValueOnce(new OpenAIConfigurationError("not configured"))
+      .mockResolvedValueOnce(validResult);
+    const [{ artifactId }] = registerArtifactBriefs("https://example.com/paper", [brief]);
+
+    await expect(generateCachedArtifact(artifactId)).rejects.toBeInstanceOf(OpenAIConfigurationError);
+    await expect(generateCachedArtifact(artifactId)).resolves.toMatchObject({ ok: true, cached: false });
+    expect(generateArtifactMock).toHaveBeenCalledTimes(2);
   });
 
   it("terminally caches a runtime repair pipeline that rejects", async () => {

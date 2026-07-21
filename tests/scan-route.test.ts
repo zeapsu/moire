@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { POST, scanRequestSchema } from "@/app/api/scan/route";
+import { resetRateLimitsForTests } from "@/lib/rate-limit";
 
 describe("scan request validation", () => {
+  beforeEach(() => resetRateLimitsForTests());
+
   it("accepts long documents so the scanner can truncate and chunk them", () => {
     const sections = Array.from({ length: 300 }, (_, index) => ({
       selector: `#p-${index + 1}`,

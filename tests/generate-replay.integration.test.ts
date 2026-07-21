@@ -18,6 +18,7 @@ vi.mock("@/lib/artifact", () => {
 
 import { POST } from "@/app/api/generate/route";
 import { registerArtifactBriefs, resetArtifactCacheForTests } from "@/lib/artifact-cache";
+import { resetRateLimitsForTests } from "@/lib/rate-limit";
 import { emptyRepairState } from "@/lib/types";
 
 const brief: VisualizationBrief = {
@@ -59,11 +60,12 @@ function request(body: object): Request {
 describe("direct artifact repair replay", () => {
   beforeEach(() => {
     resetArtifactCacheForTests();
+    resetRateLimitsForTests();
     generateArtifactMock.mockReset().mockResolvedValue(initialResult);
     repairRuntimeFailureMock.mockReset().mockResolvedValue(repairedResult);
   });
 
-  it("returns a terminal replay response without another model call", async () => {
+  it("rejects a repeated runtime repair without poisoning the validated artifact", async () => {
     const [{ artifactId }] = registerArtifactBriefs("https://example.com/paper", [brief]);
     expect((await POST(request({ artifactId }))).status).toBe(200);
     expect((await POST(request({ artifactId, runtimeError: "ready handshake timed out" }))).status).toBe(200);
@@ -83,8 +85,17 @@ describe("direct artifact repair replay", () => {
     expect(repairRuntimeFailureMock).toHaveBeenCalledTimes(1);
 
     const afterReplay = await POST(request({ artifactId }));
-    expect(afterReplay.status).toBe(422);
-    await expect(afterReplay.json()).resolves.toMatchObject({ ok: false, cached: true, artifactId });
+    expect(afterReplay.status).toBe(200);
+    await expect(afterReplay.json()).resolves.toMatchObject({
+      ok: true,
+      cached: true,
+      artifactId,
+      html: repairedResult.html,
+      repairState: {
+        attempts: { validation: 0, runtime: 1 },
+        lastFailure: { stage: "runtime", message: "same request replayed" },
+      },
+    });
     expect(generateArtifactMock).toHaveBeenCalledTimes(1);
   });
 });

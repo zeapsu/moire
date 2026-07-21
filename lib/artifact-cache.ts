@@ -6,6 +6,7 @@ import {
   type ArtifactPriority,
 } from "@/lib/artifact";
 import { normalizeTarget } from "@/lib/target";
+import { OpenAIConfigurationError } from "@/lib/openai";
 import {
   emptyRepairState,
   type ArtifactDescriptor,
@@ -115,22 +116,34 @@ export function registerArtifactBriefs(
   briefs: VisualizationBrief[],
   options: { variantKey?: string; kind?: ArtifactKind } = {},
 ): ArtifactDescriptor[] {
-  sweepCache();
   const normalizedTarget = normalizeTarget(targetUrl);
+  const keys = briefs.map((brief) => cacheKey(normalizedTarget, brief, options.variantKey));
+  const now = Date.now();
+  const missingKeys = new Set(
+    keys.filter((key) => {
+      const existingId = store.idByKey.get(key);
+      const existing = existingId ? store.byId.get(existingId) : undefined;
+      return (
+        !existing ||
+        (existing.status !== "generating" &&
+          existing.status !== "repairing" &&
+          now - existing.lastAccessedAt > CACHE_TTL_MS)
+      );
+    }),
+  );
+  sweepCache(now, missingKeys.size);
+  if (store.byId.size + missingKeys.size > MAX_CACHE_ENTRIES) {
+    throw new ArtifactCacheFullError("The visualization cache is busy. Try again shortly.");
+  }
 
-  return briefs.map((brief) => {
-    const key = cacheKey(normalizedTarget, brief, options.variantKey);
+  return briefs.map((brief, index) => {
+    const key = keys[index];
     const existingId = store.idByKey.get(key);
     const existing = existingId ? store.byId.get(existingId) : undefined;
     if (existing) {
-      existing.lastAccessedAt = Date.now();
+      existing.lastAccessedAt = now;
       if (existing.status === "idle") existing.brief = brief;
       return descriptor(existing);
-    }
-
-    sweepCache(Date.now(), 1);
-    if (store.byId.size >= MAX_CACHE_ENTRIES) {
-      throw new ArtifactCacheFullError("The visualization cache is busy. Try again shortly.");
     }
 
     const record: ArtifactRecord = {
@@ -141,7 +154,7 @@ export function registerArtifactBriefs(
       kind: options.kind ?? "page",
       status: "idle",
       repairState: emptyRepairState(),
-      lastAccessedAt: Date.now(),
+      lastAccessedAt: now,
     };
     store.byId.set(record.artifactId, record);
     store.idByKey.set(key, record.artifactId);
@@ -175,7 +188,7 @@ export async function generateCachedArtifact(
       return result;
     })
     .catch((error) => {
-      if (error instanceof ArtifactQueueFullError || (error instanceof Error && error.message.includes("OPENAI_API_KEY"))) {
+      if (error instanceof ArtifactQueueFullError || error instanceof OpenAIConfigurationError) {
         record.status = "idle";
         throw error;
       }
@@ -206,25 +219,18 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
   if (record.repairPromise) {
     record.repairState = { ...record.repairState, lastFailure: { stage: "runtime", message: diagnostic } };
     record.result = withServerRepairState(current, record.repairState);
-    return envelope(
-      record,
-      {
-        ok: false,
-        error: "The visualization could not start after its runtime repair.",
-        repairState: record.repairState,
-      },
-      true,
-    );
+    return envelope(record, await record.repairPromise, true);
   }
   if (record.repairState.attempts.runtime === 1) {
     record.repairState = { ...record.repairState, lastFailure: { stage: "runtime", message: diagnostic } };
+    record.result = withServerRepairState(current, record.repairState);
+    record.status = "ready";
+    record.lastAccessedAt = Date.now();
     const terminalResult: ArtifactResult = {
       ok: false,
       error: "The visualization could not start after its runtime repair.",
       repairState: record.repairState,
     };
-    record.result = terminalResult;
-    record.status = "error";
     return envelope(record, terminalResult, true);
   }
 
@@ -250,6 +256,17 @@ export async function repairCachedArtifact(artifactId: string, runtimeError: str
       return authoritativeResult;
     })
     .catch((error) => {
+      if (error instanceof ArtifactQueueFullError || error instanceof OpenAIConfigurationError) {
+        const retryableState: RepairState = {
+          attempts: priorState.attempts,
+          lastFailure: record.repairState.lastFailure,
+        };
+        record.repairState = retryableState;
+        record.result = withServerRepairState(current, retryableState);
+        record.status = "ready";
+        record.lastAccessedAt = Date.now();
+        throw error;
+      }
       console.error("Artifact runtime repair failed", { artifactId: record.artifactId, error });
       const terminalResult: ArtifactResult = {
         ok: false,

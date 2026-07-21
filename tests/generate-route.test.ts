@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { emptyRepairState } from "@/lib/types";
 
 const { generateCachedArtifact, repairCachedArtifact } = vi.hoisted(() => ({
   generateCachedArtifact: vi.fn(),
@@ -17,11 +18,16 @@ vi.mock("@/lib/artifact-cache", () => {
 });
 
 import { POST } from "@/app/api/generate/route";
+import { OpenAIConfigurationError } from "@/lib/openai";
+import { resetRateLimitsForTests } from "@/lib/rate-limit";
 
 const artifactId = "9ba8fd67-b0bb-445d-8a8e-803f2fb38079";
 
 describe("artifact generation route", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetRateLimitsForTests();
+  });
 
   it("returns a retryable response when the shared generation queue is full", async () => {
     const request = new Request("https://moire.test/api/generate", {
@@ -90,5 +96,41 @@ describe("artifact generation route", () => {
     expect(response.status).toBe(422);
     expect(repairCachedArtifact).toHaveBeenCalledWith(artifactId, "ready handshake timed out");
     expect(generateCachedArtifact).not.toHaveBeenCalled();
+  });
+
+  it("keeps interactive capacity available when background prefetch reaches its own limit", async () => {
+    generateCachedArtifact.mockResolvedValue({
+      ok: true,
+      artifactId,
+      cached: false,
+      html: "<!doctype html><html><body>ready</body></html>",
+      repairState: emptyRepairState(),
+    });
+    const request = (intent: "interactive" | "prefetch") =>
+      new Request("https://moire.test/api/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ artifactId, intent }),
+      });
+
+    for (let index = 0; index < 6; index += 1) {
+      expect((await POST(request("prefetch"))).status).toBe(200);
+    }
+    expect((await POST(request("prefetch"))).status).toBe(429);
+    expect((await POST(request("interactive"))).status).toBe(200);
+  });
+
+  it("maps the typed missing-key error without relying on message text", async () => {
+    generateCachedArtifact.mockRejectedValueOnce(new OpenAIConfigurationError("configuration unavailable"));
+    const response = await POST(
+      new Request("https://moire.test/api/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ artifactId }),
+      }),
+    );
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: "Moiré is missing its OpenAI API key." });
   });
 });

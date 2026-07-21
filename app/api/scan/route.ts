@@ -5,6 +5,7 @@ import { ArtifactCacheFullError, registerArtifactBriefs } from "@/lib/artifact-c
 import { scanDocument } from "@/lib/scanner";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
 import { normalizeTarget, TargetError } from "@/lib/target";
+import { OpenAIConfigurationError } from "@/lib/openai";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
@@ -69,8 +70,11 @@ export async function POST(request: Request) {
     if (error instanceof ArtifactCacheFullError) {
       return NextResponse.json({ error: error.message }, { status: 503, headers: { "retry-after": "15" } });
     }
+    if (error instanceof OpenAIConfigurationError) {
+      return NextResponse.json({ error: "Moiré is missing its OpenAI API key." }, { status: 500 });
+    }
     return NextResponse.json(
-      { error: error instanceof Error && error.message.includes("OPENAI_API_KEY") ? "Moiré is missing its OpenAI API key." : "The page scan failed. Try again." },
+      { error: "The page scan failed. Try again." },
       { status: 500 },
     );
   }

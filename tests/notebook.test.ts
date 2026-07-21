@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addNotebookEntry,
+  notebookSelectionSection,
   notebookStorageKey,
   parseNotebook,
   resolveNotebookArtifact,
@@ -35,6 +36,14 @@ describe("notebook persistence", () => {
     expect(parseNotebook(JSON.stringify([{ ...entry, repairState: { attempts: { runtime: 0 } } }]))).toEqual([]);
   });
 
+  it("keeps valid saved experiments when one stored entry is corrupted", () => {
+    const corrupted = { ...entry, artifactId: "not-a-uuid" };
+    expect(parseNotebook(JSON.stringify([entry, corrupted, { ...entry, savedAt: 456 }]))).toEqual([
+      entry,
+      { ...entry, savedAt: 456 },
+    ]);
+  });
+
   it("deduplicates entries and keeps the newest first", () => {
     const updated = addNotebookEntry([entry], { ...entry, savedAt: 456 });
     expect(updated).toHaveLength(1);
@@ -66,5 +75,11 @@ describe("notebook persistence", () => {
       status: "idle",
     });
     expect(resolveNotebookArtifact(entry, [pageArtifact])).toBe(pageArtifact);
+    expect(notebookSelectionSection(selectionEntry)).toEqual({
+      selector: "#p-1",
+      section: "Paper",
+      elementType: "paragraph",
+      text: "A passage",
+    });
   });
 });

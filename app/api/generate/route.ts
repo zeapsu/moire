@@ -8,6 +8,7 @@ import {
   repairCachedArtifact,
 } from "@/lib/artifact-cache";
 import { clientAddress, takeRateLimit } from "@/lib/rate-limit";
+import { OpenAIConfigurationError } from "@/lib/openai";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -22,13 +23,6 @@ const requestSchema = z
 
 export async function POST(request: Request) {
   try {
-    const rate = takeRateLimit(`generate:${clientAddress(request)}`, 12, 10 * 60_000);
-    if (!rate.allowed) {
-      return NextResponse.json(
-        { ok: false, error: "Too many visualization requests. Try again shortly." },
-        { status: 429, headers: { "retry-after": String(rate.retryAfter) } },
-      );
-    }
     let body: unknown;
     try {
       body = await request.json();
@@ -39,6 +33,18 @@ export async function POST(request: Request) {
     if (!parsed.success) return NextResponse.json({ error: "The visualization request is invalid." }, { status: 400 });
 
     const { artifactId, intent, runtimeError } = parsed.data;
+    const bucket = intent === "prefetch" && !runtimeError ? "prefetch" : "interactive";
+    const rate = takeRateLimit(
+      `generate:${bucket}:${clientAddress(request)}`,
+      bucket === "prefetch" ? 6 : 12,
+      10 * 60_000,
+    );
+    if (!rate.allowed) {
+      return NextResponse.json(
+        { ok: false, error: "Too many visualization requests. Try again shortly." },
+        { status: 429, headers: { "retry-after": String(rate.retryAfter) } },
+      );
+    }
     const result = runtimeError
       ? await repairCachedArtifact(artifactId, runtimeError)
       : await generateCachedArtifact(artifactId, intent);
@@ -58,8 +64,11 @@ export async function POST(request: Request) {
         { status: 503, headers: { "retry-after": "15" } },
       );
     }
+    if (error instanceof OpenAIConfigurationError) {
+      return NextResponse.json({ ok: false, error: "Moiré is missing its OpenAI API key." }, { status: 500 });
+    }
     return NextResponse.json(
-      { ok: false, error: error instanceof Error && error.message.includes("OPENAI_API_KEY") ? "Moiré is missing its OpenAI API key." : "The visualization could not be generated." },
+      { ok: false, error: "The visualization could not be generated." },
       { status: 500 },
     );
   }

@@ -5,6 +5,7 @@ import { ArtifactOverlay, type ArtifactView } from "@/components/artifact-overla
 import { NotebookRail } from "@/components/notebook-rail";
 import {
   addNotebookEntry,
+  notebookSelectionSection,
   notebookStorageKey,
   parseNotebook,
   resolveNotebookArtifact,
@@ -33,7 +34,10 @@ type ArtifactRequestOptions = {
   open: boolean;
   runtimeError?: string;
   preserveRestoreFocus?: boolean;
+  recoverNotFound?: boolean;
 };
+
+type ArtifactRequestOutcome = "complete" | "not-found" | "failed";
 
 function promptPosition(rect: DOMRect): { top: number; left: number } {
   const width = 190;
@@ -67,6 +71,7 @@ export function ReaderShell({
   const activeRequestId = useRef(0);
   const restoreFocus = useRef<HTMLElement | null>(null);
   const flashTimer = useRef<number | null>(null);
+  const selectionScanAbort = useRef<AbortController | null>(null);
 
   const updateArtifactStatus = useCallback((artifactId: string, status: ArtifactStatus) => {
     setArtifacts((current) =>
@@ -86,7 +91,7 @@ export function ReaderShell({
   }, []);
 
   const requestArtifact = useCallback(
-    async (descriptor: ArtifactDescriptor, options: ArtifactRequestOptions) => {
+    async (descriptor: ArtifactDescriptor, options: ArtifactRequestOptions): Promise<ArtifactRequestOutcome> => {
       if (!aiEnabled) {
         if (options.open) {
           setView({
@@ -96,17 +101,16 @@ export function ReaderShell({
             message: "AI requests are paused for this local QA server.",
           });
         }
-        return;
+        return "failed";
       }
       const local = !options.runtimeError ? resultCache.current.get(descriptor.artifactId) : undefined;
       if (local) {
-        saveToNotebook(descriptor);
         if (options.open) {
           if (!options.preserveRestoreFocus) restoreFocus.current = window.document.activeElement as HTMLElement | null;
           setView({ status: "ready", descriptor, html: local.html, repairState: local.repairState, cached: true });
         }
         updateArtifactStatus(descriptor.artifactId, "ready");
-        return;
+        return "complete";
       }
 
       const requestId = options.open ? activeRequestId.current + 1 : 0;
@@ -150,14 +154,13 @@ export function ReaderShell({
             message: error instanceof Error ? error.message : "The visualization request could not be completed.",
           });
         }
-        return;
+        return "failed";
       }
 
       const result = data as Partial<CachedArtifactResult>;
       if (response.ok && result.ok === true && typeof result.html === "string" && result.repairState) {
         resultCache.current.set(descriptor.artifactId, { html: result.html, repairState: result.repairState });
         updateArtifactStatus(descriptor.artifactId, "ready");
-        saveToNotebook(descriptor);
         if (options.open && requestId === activeRequestId.current) {
           setView({
             status: "ready",
@@ -167,9 +170,13 @@ export function ReaderShell({
             cached: result.cached === true || options.intent === "prefetch",
           });
         }
-        return;
+        return "complete";
       }
 
+      if (response.status === 404 && options.recoverNotFound) {
+        updateArtifactStatus(descriptor.artifactId, "idle");
+        return "not-found";
+      }
       const terminal = response.status === 422;
       updateArtifactStatus(descriptor.artifactId, terminal ? "error" : "idle");
       if (options.open && requestId === activeRequestId.current) {
@@ -182,8 +189,9 @@ export function ReaderShell({
             result.repairState && typeof result.repairState === "object" ? result.repairState : undefined,
         });
       }
+      return "failed";
     },
-    [aiEnabled, saveToNotebook, updateArtifactStatus],
+    [aiEnabled, updateArtifactStatus],
   );
 
   useEffect(() => {
@@ -238,6 +246,8 @@ export function ReaderShell({
 
   const closeOverlay = useCallback(() => {
     activeRequestId.current += 1;
+    selectionScanAbort.current?.abort();
+    selectionScanAbort.current = null;
     setView(null);
     window.setTimeout(() => restoreFocus.current?.focus({ preventScroll: true }), 0);
   }, []);
@@ -281,6 +291,7 @@ export function ReaderShell({
         setPrompt({ kind: "artifact", artifactId: artifact.artifactId, ...position });
       };
       const activate = (event: KeyboardEvent) => {
+        if (event.target !== element) return;
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         restoreFocus.current = element;
@@ -328,7 +339,8 @@ export function ReaderShell({
       const element = start?.closest<HTMLElement>('[id^="p-"]');
       if (!element || !article.contains(element)) return;
       const selector = `#${element.id}` as `#p-${number}`;
-      const position = promptPosition(range.getBoundingClientRect().width ? range.getBoundingClientRect() : element.getBoundingClientRect());
+      const rangeRect = range.getBoundingClientRect();
+      const position = promptPosition(rangeRect.width ? rangeRect : element.getBoundingClientRect());
       const source = sourceDocument.sections.find((section) => section.selector === selector);
       if (!source) return;
       setPrompt({ kind: "selection", section: { ...source, text }, ...position });
@@ -361,8 +373,14 @@ export function ReaderShell({
   const scanSelection = useCallback(
     async (section: ScanSection) => {
       if (!aiEnabled) return;
+      const sourceElement = articleRef.current?.querySelector<HTMLElement>(section.selector);
+      restoreFocus.current = sourceElement ?? null;
       setPrompt(null);
-      restoreFocus.current = window.document.activeElement as HTMLElement | null;
+      selectionScanAbort.current?.abort();
+      const controller = new AbortController();
+      selectionScanAbort.current = controller;
+      const requestId = activeRequestId.current + 1;
+      activeRequestId.current = requestId;
       setView({
         status: "loading",
         title: section.section || "Selected passage",
@@ -374,18 +392,23 @@ export function ReaderShell({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, selection: true, sections: [section] }),
+          signal: controller.signal,
         });
         const data = (await response.json()) as { artifacts?: ArtifactDescriptor[]; error?: string };
+        if (controller.signal.aborted || requestId !== activeRequestId.current) return;
         if (!response.ok || !data.artifacts) throw new Error(data.error || "The selected passage could not be scanned.");
         const descriptor = data.artifacts[0];
         if (!descriptor) throw new Error("This selection did not yield a useful interactive view.");
         openArtifact(descriptor, true);
       } catch (error) {
+        if (controller.signal.aborted || requestId !== activeRequestId.current) return;
         setView({
           status: "error",
           title: section.section || "Selected passage",
           message: error instanceof Error ? error.message : "The selected passage could not be visualized.",
         });
+      } finally {
+        if (selectionScanAbort.current === controller) selectionScanAbort.current = null;
       }
     },
     [aiEnabled, openArtifact, sourceDocument.targetUrl],
@@ -406,10 +429,61 @@ export function ReaderShell({
   );
 
   const openNotebookEntry = useCallback(
-    (entry: NotebookEntry) => {
-      openArtifact(resolveNotebookArtifact(entry, artifacts));
+    async (entry: NotebookEntry) => {
+      const resolved = resolveNotebookArtifact(entry, artifacts);
+      setPrompt(null);
+      const outcome = await requestArtifact(resolved, {
+        intent: "interactive",
+        open: true,
+        recoverNotFound: entry.kind === "selection",
+      });
+      if (outcome !== "not-found") return;
+
+      const section = notebookSelectionSection(entry);
+      if (!section) return;
+      const requestId = activeRequestId.current;
+      setView({
+        status: "loading",
+        title: entry.brief.title,
+        descriptor: resolved,
+        message: "Rebuilding this saved selection…",
+        detail: "Its server cache entry expired, so Moiré is registering the selected passage again.",
+      });
+      try {
+        const response = await fetch("/api/scan", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, selection: true, sections: [section] }),
+        });
+        const data = (await response.json()) as { artifacts?: ArtifactDescriptor[]; error?: string };
+        if (requestId !== activeRequestId.current) return;
+        if (!response.ok || !data.artifacts?.[0]) {
+          throw new Error(data.error || "The saved selection could not be registered again.");
+        }
+        const replacement = data.artifacts[0];
+        setNotebook((current) =>
+          current.map((candidate) =>
+            candidate.artifactId === entry.artifactId
+              ? { ...candidate, artifactId: replacement.artifactId, brief: replacement.brief }
+              : candidate,
+          ),
+        );
+        await requestArtifact(replacement, {
+          intent: "interactive",
+          open: true,
+          preserveRestoreFocus: true,
+        });
+      } catch (error) {
+        if (requestId !== activeRequestId.current) return;
+        setView({
+          status: "error",
+          title: entry.brief.title,
+          descriptor: resolved,
+          message: error instanceof Error ? error.message : "The saved selection could not be rebuilt.",
+        });
+      }
     },
-    [artifacts, openArtifact],
+    [artifacts, requestArtifact, sourceDocument.targetUrl],
   );
 
   const revealNotebookSource = useCallback(
@@ -491,7 +565,11 @@ export function ReaderShell({
             type="button"
             onClick={() => {
               if (prompt.kind === "selection") void scanSelection(prompt.section);
-              else if (promptArtifact) openArtifact(promptArtifact);
+              else if (promptArtifact) {
+                restoreFocus.current =
+                  articleRef.current?.querySelector<HTMLElement>(promptArtifact.brief.anchor.dom_selector) ?? null;
+                openArtifact(promptArtifact, true);
+              }
             }}
           >
             {promptLabel} <i aria-hidden="true">↗</i>
