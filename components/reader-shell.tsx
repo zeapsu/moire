@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArtifactOverlay, type ArtifactView } from "@/components/artifact-overlay";
-import { NotebookRail } from "@/components/notebook-rail";
+import { createPortal } from "react-dom";
+import { InlineExperiment, type ArtifactView } from "@/components/inline-experiment";
+import { NotebookPanel, type NotebookStyle } from "@/components/notebook-panel";
 import {
   addNotebookEntry,
   notebookSelectionSection,
@@ -39,10 +40,12 @@ type ArtifactRequestOptions = {
 
 type ArtifactRequestOutcome = "complete" | "not-found" | "failed";
 
+type ScanState = "loading" | "ready" | "error" | "paused";
+
 function promptPosition(rect: DOMRect): { top: number; left: number } {
-  const width = 190;
+  const width = 230;
   const left = rect.right + width + 20 < window.innerWidth ? rect.right + 12 : Math.max(12, rect.right - width);
-  return { top: Math.max(76, Math.min(window.innerHeight - 92, rect.top - 8)), left };
+  return { top: Math.max(76, Math.min(window.innerHeight - 120, rect.top - 8)), left };
 }
 
 function responseMessage(data: unknown, fallback: string): string {
@@ -64,6 +67,137 @@ function hydrateReadyDescriptor(
     : descriptor;
 }
 
+type SpineMark = {
+  id: string;
+  pct: number;
+  title: string;
+  status: ArtifactStatus;
+  selector: string;
+};
+
+function ExperimentSpine({
+  articleRef,
+  artifacts,
+  scanState,
+  scanError,
+  openAnchor,
+}: {
+  articleRef: React.RefObject<HTMLDivElement | null>;
+  artifacts: ArtifactDescriptor[];
+  scanState: ScanState;
+  scanError: string;
+  openAnchor: string | null;
+}) {
+  const bandRef = useRef<HTMLSpanElement>(null);
+  const [marks, setMarks] = useState<SpineMark[]>([]);
+
+  useEffect(() => {
+    const article = articleRef.current;
+    if (!article) return;
+    const measure = () => {
+      const docHeight = window.document.documentElement.scrollHeight;
+      if (!docHeight) return;
+      setMarks(
+        artifacts.flatMap((artifact) => {
+          const element = article.querySelector<HTMLElement>(artifact.brief.anchor.dom_selector);
+          if (!element) return [];
+          const pct = ((element.getBoundingClientRect().top + window.scrollY) / docHeight) * 100;
+          return [
+            {
+              id: artifact.artifactId,
+              pct: Math.min(98, Math.max(1, pct)),
+              title: artifact.brief.title,
+              status: artifact.status,
+              selector: artifact.brief.anchor.dom_selector,
+            },
+          ];
+        }),
+      );
+    };
+    measure();
+    // ponytail: one delayed re-measure absorbs late image/math layout shifts; use a ResizeObserver if it misses.
+    const timer = window.setTimeout(measure, 1500);
+    window.addEventListener("resize", measure);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", measure);
+    };
+  }, [articleRef, artifacts, openAnchor]);
+
+  useEffect(() => {
+    const band = bandRef.current;
+    if (!band) return;
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const docHeight = window.document.documentElement.scrollHeight;
+      if (!docHeight) return;
+      band.style.top = `${(window.scrollY / docHeight) * 100}%`;
+      band.style.height = `${(window.innerHeight / docHeight) * 100}%`;
+    };
+    const schedule = () => {
+      if (!raf) raf = window.requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    return () => {
+      if (raf) window.cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+    };
+  }, []);
+
+  const readyCount = artifacts.filter((artifact) => artifact.status === "ready").length;
+  const label =
+    scanState === "loading"
+      ? "Scanning source"
+      : scanState === "error"
+        ? "Scan stopped"
+        : scanState === "paused"
+          ? "AI paused · layout only"
+          : artifacts.length === 0
+            ? "No experiments found"
+            : openAnchor
+              ? `1 open · ${readyCount} ready`
+              : readyCount > 0
+                ? `${readyCount} of ${artifacts.length} ready`
+                : `${artifacts.length} experiment${artifacts.length === 1 ? "" : "s"}`;
+
+  const jump = (selector: string) => {
+    const element = articleRef.current?.querySelector<HTMLElement>(selector);
+    if (!element) return;
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    element.focus({ preventScroll: true });
+  };
+
+  return (
+    <nav className="experiment-spine" aria-label="Experiments in this source">
+      <span
+        className={`spine-label${scanState === "error" ? " is-error" : ""}`}
+        title={scanState === "error" ? scanError : undefined}
+      >
+        {label.toUpperCase()}
+      </span>
+      <div className="spine-track">
+        <span className="spine-band" ref={bandRef} aria-hidden="true" />
+        {marks.map((mark) => (
+          <button
+            key={mark.id}
+            type="button"
+            className={`spine-mark${mark.selector === openAnchor ? " is-open" : ""}`}
+            data-status={mark.status}
+            style={{ top: `${mark.pct}%` }}
+            title={mark.title}
+            aria-label={`Go to passage: ${mark.title}`}
+            onClick={() => jump(mark.selector)}
+          />
+        ))}
+      </div>
+    </nav>
+  );
+}
+
 export function ReaderShell({
   document: sourceDocument,
   aiEnabled = true,
@@ -72,20 +206,24 @@ export function ReaderShell({
   aiEnabled?: boolean;
 }) {
   const [artifacts, setArtifacts] = useState<ArtifactDescriptor[]>([]);
-  const [scanState, setScanState] = useState<"loading" | "ready" | "error" | "paused">(
-    aiEnabled ? "loading" : "paused",
-  );
+  const [scanState, setScanState] = useState<ScanState>(aiEnabled ? "loading" : "paused");
   const [scanError, setScanError] = useState("");
   const [view, setView] = useState<ArtifactView | null>(null);
   const [prompt, setPrompt] = useState<AnchorPrompt | null>(null);
   const [notebook, setNotebook] = useState<NotebookEntry[]>([]);
   const [notebookLoaded, setNotebookLoaded] = useState(false);
+  const [notebookOpen, setNotebookOpen] = useState(false);
+  const [notebookStyle, setNotebookStyle] = useState<NotebookStyle>("dock");
+  const [slotEl, setSlotEl] = useState<HTMLDivElement | null>(null);
+  const [awayFromOpen, setAwayFromOpen] = useState(false);
   const articleRef = useRef<HTMLDivElement>(null);
   const resultCache = useRef(new Map<string, StoredArtifact>());
   const activeRequestId = useRef(0);
   const restoreFocus = useRef<HTMLElement | null>(null);
   const flashTimer = useRef<number | null>(null);
   const selectionScanAbort = useRef<AbortController | null>(null);
+  const slotRef = useRef<HTMLDivElement | null>(null);
+  const collapsing = useRef(false);
 
   const updateArtifactStatus = useCallback((artifactId: string, status: ArtifactStatus) => {
     setArtifacts((current) =>
@@ -106,10 +244,12 @@ export function ReaderShell({
 
   const requestArtifact = useCallback(
     async (descriptor: ArtifactDescriptor, options: ArtifactRequestOptions): Promise<ArtifactRequestOutcome> => {
+      const anchor = descriptor.brief.anchor.dom_selector;
       if (!aiEnabled) {
         if (options.open) {
           setView({
             status: "error",
+            anchor,
             title: descriptor.brief.title,
             descriptor,
             message: "AI requests are paused for this local QA server.",
@@ -121,7 +261,7 @@ export function ReaderShell({
       if (local) {
         if (options.open) {
           if (!options.preserveRestoreFocus) restoreFocus.current = window.document.activeElement as HTMLElement | null;
-          setView({ status: "ready", descriptor, html: local.html, repairState: local.repairState, cached: true });
+          setView({ status: "ready", anchor, descriptor, html: local.html, repairState: local.repairState, cached: true });
         }
         updateArtifactStatus(descriptor.artifactId, "ready");
         return "complete";
@@ -133,6 +273,7 @@ export function ReaderShell({
         if (!options.preserveRestoreFocus) restoreFocus.current = window.document.activeElement as HTMLElement | null;
         setView({
           status: "loading",
+          anchor,
           title: descriptor.brief.title,
           message: options.runtimeError ? "Repairing the experiment…" : "Building the experiment…",
           detail: options.runtimeError
@@ -163,6 +304,7 @@ export function ReaderShell({
         if (options.open && requestId === activeRequestId.current) {
           setView({
             status: "error",
+            anchor,
             title: descriptor.brief.title,
             descriptor,
             message: error instanceof Error ? error.message : "The visualization request could not be completed.",
@@ -178,6 +320,7 @@ export function ReaderShell({
         if (options.open && requestId === activeRequestId.current) {
           setView({
             status: "ready",
+            anchor,
             descriptor: { ...descriptor, status: "ready" },
             html: result.html,
             repairState: result.repairState,
@@ -196,6 +339,7 @@ export function ReaderShell({
       if (options.open && requestId === activeRequestId.current) {
         setView({
           status: "error",
+          anchor,
           title: descriptor.brief.title,
           descriptor,
           message: responseMessage(data, "The visualization could not be generated."),
@@ -255,6 +399,8 @@ export function ReaderShell({
       setNotebook([]);
     }
     setNotebookLoaded(true);
+    const stored = window.localStorage.getItem("moire:notebook-style");
+    if (stored === "rail" || stored === "dock") setNotebookStyle(stored);
   }, [sourceDocument.targetUrl]);
 
   useEffect(() => {
@@ -266,12 +412,35 @@ export function ReaderShell({
     }
   }, [notebook, notebookLoaded, sourceDocument.targetUrl]);
 
-  const closeOverlay = useCallback(() => {
+  const changeNotebookStyle = useCallback((style: NotebookStyle) => {
+    setNotebookStyle(style);
+    try {
+      window.localStorage.setItem("moire:notebook-style", style);
+    } catch {
+      // Style preference persistence is best-effort.
+    }
+  }, []);
+
+  // Collapse reverses the expand and restores geometry exactly; 0s under reduced motion.
+  const closeView = useCallback(() => {
+    if (collapsing.current) return;
     activeRequestId.current += 1;
     selectionScanAbort.current?.abort();
     selectionScanAbort.current = null;
-    setView(null);
-    window.setTimeout(() => restoreFocus.current?.focus({ preventScroll: true }), 0);
+    const slot = slotRef.current;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const finish = () => {
+      collapsing.current = false;
+      setView(null);
+      window.setTimeout(() => restoreFocus.current?.focus({ preventScroll: true }), 0);
+    };
+    if (slot && !reduced) {
+      collapsing.current = true;
+      slot.classList.remove("is-open");
+      window.setTimeout(finish, 240);
+    } else {
+      finish();
+    }
   }, []);
 
   const openArtifact = useCallback(
@@ -286,6 +455,59 @@ export function ReaderShell({
     [requestArtifact],
   );
 
+  // The inline slot: one element inserted after the anchor passage, one reflow per expand.
+  const anchorSelector = view?.anchor ?? null;
+  useEffect(() => {
+    if (!anchorSelector) {
+      slotRef.current = null;
+      setSlotEl(null);
+      return;
+    }
+    const article = articleRef.current;
+    if (!article) return;
+    const target = article.querySelector<HTMLElement>(anchorSelector);
+    const container = window.document.createElement("div");
+    container.className = "moire-inline-slot";
+    if (target) {
+      target.insertAdjacentElement("afterend", container);
+      target.dataset.moireOpen = "true";
+    } else {
+      article.appendChild(container);
+    }
+    slotRef.current = container;
+    setSlotEl(container);
+    const raf = window.requestAnimationFrame(() => container.classList.add("is-open"));
+    return () => {
+      window.cancelAnimationFrame(raf);
+      container.remove();
+      if (target) delete target.dataset.moireOpen;
+      if (slotRef.current === container) slotRef.current = null;
+      setSlotEl((current) => (current === container ? null : current));
+    };
+  }, [anchorSelector]);
+
+  useEffect(() => {
+    if (!view) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeView();
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [view, closeView]);
+
+  // Failure case 5a: scrolled away while an experiment is open → quiet return chip.
+  useEffect(() => {
+    if (!slotEl) {
+      setAwayFromOpen(false);
+      return;
+    }
+    const observer = new IntersectionObserver(([entry]) => setAwayFromOpen(!entry.isIntersecting));
+    observer.observe(slotEl);
+    return () => observer.disconnect();
+  }, [slotEl]);
+
   const artifactSignature = useMemo(
     () => artifacts.map((artifact) => `${artifact.artifactId}:${artifact.brief.anchor.dom_selector}`).join("|"),
     [artifacts],
@@ -296,13 +518,12 @@ export function ReaderShell({
     if (!article || !aiEnabled) return;
     const cleanups: Array<() => void> = [];
 
-    artifacts.forEach((artifact, index) => {
+    artifacts.forEach((artifact) => {
       const element = article.querySelector<HTMLElement>(artifact.brief.anchor.dom_selector);
       if (!element) return;
       const priorTabIndex = element.getAttribute("tabindex");
       const priorLabel = element.getAttribute("aria-label");
       element.classList.add("moire-candidate");
-      if (index < 3) element.classList.add("moire-speculative");
       element.dataset.moireStatus = artifact.status;
       element.dataset.moireArtifact = artifact.artifactId;
       element.tabIndex = 0;
@@ -323,7 +544,7 @@ export function ReaderShell({
       element.addEventListener("focus", reveal);
       element.addEventListener("keydown", activate);
       cleanups.push(() => {
-        element.classList.remove("moire-candidate", "moire-speculative", "moire-flash");
+        element.classList.remove("moire-candidate", "moire-flash");
         delete element.dataset.moireStatus;
         delete element.dataset.moireArtifact;
         if (priorTabIndex === null) element.removeAttribute("tabindex");
@@ -405,6 +626,7 @@ export function ReaderShell({
       activeRequestId.current = requestId;
       setView({
         status: "loading",
+        anchor: section.selector,
         title: section.section || "Selected passage",
         message: "Finding an interactive angle…",
         detail: "The fast scanner is turning this selection into a bounded visualization brief.",
@@ -430,6 +652,7 @@ export function ReaderShell({
         if (controller.signal.aborted || requestId !== activeRequestId.current) return;
         setView({
           status: "error",
+          anchor: section.selector,
           title: section.section || "Selected passage",
           message: error instanceof Error ? error.message : "The selected passage could not be visualized.",
         });
@@ -470,6 +693,7 @@ export function ReaderShell({
       const requestId = activeRequestId.current;
       setView({
         status: "loading",
+        anchor: resolved.brief.anchor.dom_selector,
         title: entry.brief.title,
         descriptor: resolved,
         message: "Rebuilding this saved selection…",
@@ -507,6 +731,7 @@ export function ReaderShell({
         if (requestId !== activeRequestId.current) return;
         setView({
           status: "error",
+          anchor: resolved.brief.anchor.dom_selector,
           title: entry.brief.title,
           descriptor: resolved,
           message: error instanceof Error ? error.message : "The saved selection could not be rebuilt.",
@@ -526,7 +751,7 @@ export function ReaderShell({
         element.focus({ preventScroll: true });
         element.classList.add("moire-flash");
         if (flashTimer.current) window.clearTimeout(flashTimer.current);
-        flashTimer.current = window.setTimeout(() => element.classList.remove("moire-flash"), 1300);
+        flashTimer.current = window.setTimeout(() => element.classList.remove("moire-flash"), 2000);
       }, 350);
     },
     [],
@@ -553,15 +778,31 @@ export function ReaderShell({
           : "Generate view"
     : "Visualize selection?";
 
-  return (
-    <div className="reader-page">
-      <header className="reader-bar">
-        <a className="wordmark" href="/">Moiré <span>β</span></a>
-        <div className="source-address" title={sourceDocument.targetUrl}>{sourceDocument.targetUrl}</div>
-        <a className="source-link" href={sourceDocument.targetUrl} target="_blank" rel="noreferrer">Original ↗</a>
-      </header>
+  const viewDescriptor = view && "descriptor" in view ? view.descriptor : undefined;
+  const pinned =
+    view?.status === "ready" && notebook.some((entry) => entry.artifactId === view.descriptor.artifactId);
+  const awaySection = viewDescriptor?.brief.anchor.section || (view?.status !== "ready" ? view?.title : "");
 
-      <main className="reader-grid">
+  return (
+    <div className={`reader-page${notebookOpen && notebookStyle === "rail" ? " nb-rail-open" : ""}`}>
+      <div className="reader-top">
+        <div className="top-hairline" aria-hidden="true" />
+        <header className="source-bar">
+          <a className="wordmark" href="/">Moiré <span>β</span></a>
+          <div className="source-address" title={sourceDocument.targetUrl}>{sourceDocument.targetUrl}</div>
+          <a className="source-link" href={sourceDocument.targetUrl} target="_blank" rel="noreferrer">Original ↗</a>
+        </header>
+      </div>
+
+      <ExperimentSpine
+        articleRef={articleRef}
+        artifacts={artifacts}
+        scanState={scanState}
+        scanError={scanError}
+        openAnchor={anchorSelector}
+      />
+
+      <main className="reader-main">
         <article className={`paper-pane${isArxivHtml ? " is-arxiv" : ""}`}>
           {!isArxivHtml ? (
             <header className="paper-meta">
@@ -576,16 +817,17 @@ export function ReaderShell({
             dangerouslySetInnerHTML={articleMarkup}
           />
         </article>
-
-        <NotebookRail
-          scanState={scanState}
-          scanError={scanError}
-          artifacts={artifacts}
-          entries={notebook}
-          onOpen={openNotebookEntry}
-          onRevealSource={revealNotebookSource}
-        />
       </main>
+
+      <NotebookPanel
+        entries={notebook}
+        open={notebookOpen}
+        style={notebookStyle}
+        onToggle={() => setNotebookOpen((current) => !current)}
+        onStyleChange={changeNotebookStyle}
+        onOpenEntry={openNotebookEntry}
+        onRevealSource={revealNotebookSource}
+      />
 
       {prompt ? (
         <div className={`anchor-prompt is-${prompt.kind}`} style={{ top: prompt.top, left: prompt.left }}>
@@ -602,22 +844,54 @@ export function ReaderShell({
               }
             }}
           >
-            {promptLabel} <i aria-hidden="true">↗</i>
+            {promptLabel}
           </button>
         </div>
       ) : null}
 
-      {view ? (
-        <ArtifactOverlay
-          view={view}
-          onClose={closeOverlay}
-          onMinimize={() => {
-            if (view.status === "ready") saveToNotebook(view.descriptor);
-            closeOverlay();
-          }}
-          onRuntimeFailure={handleRuntimeFailure}
-        />
+      {view && awayFromOpen ? (
+        <div className="return-chip">
+          <i aria-hidden="true" />
+          <span>Experiment open{awaySection ? ` in ${awaySection}` : ""} —</span>
+          <button
+            type="button"
+            onClick={() => slotRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+          >
+            Return ↑
+          </button>
+        </div>
       ) : null}
+
+      {view && slotEl
+        ? createPortal(
+            <InlineExperiment
+              view={view}
+              pinned={pinned}
+              onPin={() => {
+                if (view.status !== "ready") return;
+                saveToNotebook(view.descriptor);
+                setNotebookOpen(true);
+              }}
+              onCollapse={closeView}
+              onRetry={
+                view.status === "error" && view.descriptor
+                  ? () => {
+                      const descriptor = view.descriptor;
+                      if (descriptor) {
+                        void requestArtifact(descriptor, {
+                          intent: "interactive",
+                          open: true,
+                          preserveRestoreFocus: true,
+                        });
+                      }
+                    }
+                  : undefined
+              }
+              onRuntimeFailure={handleRuntimeFailure}
+            />,
+            slotEl,
+          )
+        : null}
     </div>
   );
 }

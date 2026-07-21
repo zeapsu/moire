@@ -69,7 +69,7 @@ export function ArtifactFrame({ html, title, onRuntimeFailure, onDismiss }: Arti
 
   return (
     <div className="artifact-runtime">
-      {!ready ? <div className="runtime-status"><span /> Starting the experiment…</div> : null}
+      {!ready ? <div className="runtime-status">◨ Starting the experiment…</div> : null}
       <iframe
         ref={iframeRef}
         title={title}
