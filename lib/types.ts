@@ -49,7 +49,20 @@ export const briefBatchSchema = z
   })
   .strict();
 
+export const selectionScanSchema = z
+  .object({
+    assessment: z
+      .object({
+        status: z.enum(["sufficient", "too_narrow", "multiple_concepts"]),
+        reason: z.string().min(1).max(240),
+      })
+      .strict(),
+    briefs: z.array(briefSchema).max(1),
+  })
+  .strict();
+
 export type VisualizationBrief = z.infer<typeof briefSchema>;
+export type SelectionScan = z.infer<typeof selectionScanSchema>;
 
 export type ScanSection = {
   selector: `#p-${number}`;

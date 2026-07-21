@@ -32,6 +32,13 @@ describe("scan request validation", () => {
       scanRequestSchema.safeParse({
         targetUrl: "https://example.com/paper",
         selection: true,
+        selectionContext: {
+          blockCount: 2,
+          sectionCount: 1,
+          headingCount: 0,
+          documentCharacters: 100,
+          elementTypes: ["paragraph"],
+        },
         sections: [section, { ...section, selector: "#p-2" }],
       }).success,
     ).toBe(false);

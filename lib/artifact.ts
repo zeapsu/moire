@@ -191,10 +191,17 @@ export function validateArtifact(html: string, render: "2d" | "3d", expectedPara
   return { ok: errors.length === 0, errors, bytes };
 }
 
-function generatorInstructions(brief: VisualizationBrief): string {
+export function generatorInstructions(brief: VisualizationBrief): string {
   const networkRule =
     brief.render === "3d"
-      ? `Use a static import map mapping \"three\" to exactly ${THREE_JS_URL}. This is the only permitted external URL.`
+      ? [
+          `Use exactly one static import map mapping \"three\" to ${THREE_JS_URL}, then import * as THREE from \"three\" in one inline type=\"module\" script. This is the only permitted external URL or module.`,
+          "Build a real Three.js scene with THREE.Scene, PerspectiveCamera or OrthographicCamera, and WebGLRenderer. Use procedural geometry, materials, lights, and labels only; do not load models, textures, fonts, or other assets.",
+          "Size the renderer from its visible container, cap device pixel ratio at 2, and update the camera and renderer with ResizeObserver or a resize listener.",
+          "Use requestAnimationFrame only when motion explains the concept. Keep animation deterministic and bounded, and cancel it plus dispose geometries, materials, and the renderer on pagehide.",
+          "If camera movement helps, implement pointer drag and wheel controls directly without importing OrbitControls. Keep the supplied sliders as the primary, labeled controls and make every slider visibly affect the scene.",
+          "Render the first complete frame before posting the ready message. Keep the explanatory caption legible outside the WebGL canvas.",
+        ].join(" ")
       : "Use canvas or SVG with vanilla JavaScript. Include no external URLs or imports.";
   return [
     "Return exactly one complete self-contained HTML file beginning with <!doctype html>. Do not use Markdown fences or commentary.",

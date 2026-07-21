@@ -12,6 +12,14 @@ import {
   resolveNotebookArtifact,
   type NotebookEntry,
 } from "@/lib/notebook";
+import {
+  assessSelection,
+  selectionContextForStoredSection,
+  warningForFocusStatus,
+  type SelectionContext,
+  type SelectionFocusAssessment,
+  type SelectionPolicyResult,
+} from "@/lib/selection-policy";
 import type {
   ArtifactDescriptor,
   ArtifactStatus,
@@ -28,7 +36,14 @@ type StoredArtifact = {
 
 type AnchorPrompt =
   | { kind: "artifact"; artifactId: string; top: number; left: number }
-  | { kind: "selection"; section: ScanSection; top: number; left: number };
+  | {
+      kind: "selection";
+      section: ScanSection;
+      context: SelectionContext;
+      policy: SelectionPolicyResult;
+      top: number;
+      left: number;
+    };
 
 type ArtifactRequestOptions = {
   intent: "interactive" | "prefetch";
@@ -51,6 +66,39 @@ function promptPosition(rect: DOMRect): { top: number; left: number } {
 function responseMessage(data: unknown, fallback: string): string {
   if (data && typeof data === "object" && "error" in data && typeof data.error === "string") return data.error;
   return fallback;
+}
+
+function rangeIntersects(range: Range, element: Element): boolean {
+  try {
+    return range.intersectsNode(element);
+  } catch {
+    return false;
+  }
+}
+
+function collectSelectionContext(
+  range: Range,
+  article: HTMLElement,
+  sections: ScanSection[],
+): { context: SelectionContext; source?: ScanSection } {
+  const intersected = sections.filter((section) => {
+    const element = article.querySelector(section.selector);
+    return element ? rangeIntersects(range, element) : false;
+  });
+  const headingCount = [...article.querySelectorAll("h1,h2,h3,h4,h5,h6")].filter((heading) =>
+    rangeIntersects(range, heading),
+  ).length;
+  const elementTypes = [...new Set(intersected.map((section) => section.elementType))];
+  return {
+    source: intersected[0],
+    context: {
+      blockCount: Math.max(1, intersected.length),
+      sectionCount: Math.max(1, new Set(intersected.map((section) => section.section)).size),
+      headingCount,
+      documentCharacters: Math.max(1, sections.reduce((sum, section) => sum + section.text.length, 0)),
+      elementTypes: elementTypes.length > 0 ? elementTypes : ["paragraph"],
+    },
+  };
 }
 
 function hydrateReadyDescriptor(
@@ -201,9 +249,11 @@ function ExperimentSpine({
 export function ReaderShell({
   document: sourceDocument,
   aiEnabled = true,
+  prefetchEnabled = true,
 }: {
   document: IngestedDocument;
   aiEnabled?: boolean;
+  prefetchEnabled?: boolean;
 }) {
   const [artifacts, setArtifacts] = useState<ArtifactDescriptor[]>([]);
   const [scanState, setScanState] = useState<ScanState>(aiEnabled ? "loading" : "paused");
@@ -377,9 +427,11 @@ export function ReaderShell({
         );
         setArtifacts(browserArtifacts);
         setScanState("ready");
-        for (const descriptor of browserArtifacts.slice(0, 3)) {
-          if (resultCache.current.has(descriptor.artifactId)) continue;
-          void requestArtifact(descriptor, { intent: "prefetch", open: false });
+        if (prefetchEnabled) {
+          for (const descriptor of browserArtifacts.slice(0, 3)) {
+            if (resultCache.current.has(descriptor.artifactId)) continue;
+            void requestArtifact(descriptor, { intent: "prefetch", open: false });
+          }
         }
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -389,7 +441,7 @@ export function ReaderShell({
     }
     void scan();
     return () => controller.abort();
-  }, [aiEnabled, requestArtifact, sourceDocument.sections, sourceDocument.targetUrl]);
+  }, [aiEnabled, prefetchEnabled, requestArtifact, sourceDocument.sections, sourceDocument.targetUrl]);
 
   useEffect(() => {
     const key = notebookStorageKey(sourceDocument.targetUrl);
@@ -575,18 +627,21 @@ export function ReaderShell({
     const captureSelection = () => {
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
-      const text = selection.toString().replace(/\s+/g, " ").trim().slice(0, 1800);
-      if (text.length < 12) return;
+      const text = selection.toString().replace(/\s+/g, " ").trim();
       const range = selection.getRangeAt(0);
       const start = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
       const element = start?.closest<HTMLElement>('[id^="p-"]');
-      if (!element || !article.contains(element)) return;
-      const selector = `#${element.id}` as `#p-${number}`;
+      const structural = collectSelectionContext(range, article, sourceDocument.sections);
+      const selector = element && article.contains(element) ? (`#${element.id}` as `#p-${number}`) : structural.source?.selector;
+      if (!selector) return;
       const rangeRect = range.getBoundingClientRect();
-      const position = promptPosition(rangeRect.width ? rangeRect : element.getBoundingClientRect());
-      const source = sourceDocument.sections.find((section) => section.selector === selector);
+      const fallbackElement = article.querySelector<HTMLElement>(selector);
+      if (!fallbackElement) return;
+      const position = promptPosition(rangeRect.width ? rangeRect : fallbackElement.getBoundingClientRect());
+      const source = sourceDocument.sections.find((section) => section.selector === selector) ?? structural.source;
       if (!source) return;
-      setPrompt({ kind: "selection", section: { ...source, text }, ...position });
+      const policy = assessSelection(text, structural.context);
+      setPrompt({ kind: "selection", section: { ...source, text }, context: structural.context, policy, ...position });
     };
     article.addEventListener("mouseup", captureSelection);
     article.addEventListener("keyup", captureSelection);
@@ -614,8 +669,9 @@ export function ReaderShell({
   }, []);
 
   const scanSelection = useCallback(
-    async (section: ScanSection) => {
+    async (selectionPrompt: Extract<AnchorPrompt, { kind: "selection" }>) => {
       if (!aiEnabled) return;
+      const { section, context, top, left } = selectionPrompt;
       const sourceElement = articleRef.current?.querySelector<HTMLElement>(section.selector);
       restoreFocus.current = sourceElement ?? null;
       setPrompt(null);
@@ -635,18 +691,38 @@ export function ReaderShell({
         const response = await fetch("/api/scan", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, selection: true, sections: [section] }),
+          body: JSON.stringify({
+            targetUrl: sourceDocument.targetUrl,
+            selection: true,
+            selectionContext: context,
+            sections: [section],
+          }),
           signal: controller.signal,
         });
         const data = (await response.json()) as {
           artifacts?: ArtifactDescriptor[];
           readyArtifacts?: CachedArtifactResult[];
+          selectionAssessment?: SelectionFocusAssessment;
           error?: string;
         };
         if (controller.signal.aborted || requestId !== activeRequestId.current) return;
         if (!response.ok || !data.artifacts) throw new Error(data.error || "The selected passage could not be scanned.");
+        if (data.selectionAssessment && data.selectionAssessment.status !== "sufficient") {
+          setView(null);
+          setPrompt({
+            ...selectionPrompt,
+            top,
+            left,
+            policy: warningForFocusStatus(data.selectionAssessment.status),
+          });
+          return;
+        }
         const scanned = data.artifacts[0];
-        if (!scanned) throw new Error("This selection did not yield a useful interactive view.");
+        if (!scanned) {
+          setView(null);
+          setPrompt({ ...selectionPrompt, top, left, policy: warningForFocusStatus("too_narrow") });
+          return;
+        }
         openArtifact(hydrateReadyDescriptor(resultCache.current, scanned, data.readyArtifacts), true);
       } catch (error) {
         if (controller.signal.aborted || requestId !== activeRequestId.current) return;
@@ -703,7 +779,12 @@ export function ReaderShell({
         const response = await fetch("/api/scan", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ targetUrl: sourceDocument.targetUrl, selection: true, sections: [section] }),
+          body: JSON.stringify({
+            targetUrl: sourceDocument.targetUrl,
+            selection: true,
+            selectionContext: selectionContextForStoredSection(section),
+            sections: [section],
+          }),
         });
         const data = (await response.json()) as {
           artifacts?: ArtifactDescriptor[];
@@ -830,22 +911,42 @@ export function ReaderShell({
       />
 
       {prompt ? (
-        <div className={`anchor-prompt is-${prompt.kind}`} style={{ top: prompt.top, left: prompt.left }}>
-          <span>{prompt.kind === "selection" ? "Selected passage" : promptArtifact?.brief.viz_kind.replace("-", " ")}</span>
-          <strong>{prompt.kind === "selection" ? prompt.section.text.slice(0, 72) : promptArtifact?.brief.title}</strong>
-          <button
-            type="button"
-            onClick={() => {
-              if (prompt.kind === "selection") void scanSelection(prompt.section);
-              else if (promptArtifact) {
-                restoreFocus.current =
-                  articleRef.current?.querySelector<HTMLElement>(promptArtifact.brief.anchor.dom_selector) ?? null;
-                openArtifact(promptArtifact, true);
-              }
-            }}
-          >
-            {promptLabel}
-          </button>
+        <div
+          className={`anchor-prompt is-${prompt.kind}${prompt.kind === "selection" ? ` is-${prompt.policy.status}` : ""}`}
+          style={{ top: prompt.top, left: prompt.left }}
+          aria-live="polite"
+        >
+          <span>
+            {prompt.kind === "selection"
+              ? prompt.policy.status === "too_narrow"
+                ? "Selection needs context"
+                : prompt.policy.status === "too_broad"
+                  ? "Selection spans multiple concepts"
+                  : "Selected passage"
+              : promptArtifact?.brief.viz_kind.replace("-", " ")}
+          </span>
+          <strong>
+            {prompt.kind === "selection"
+              ? prompt.policy.status === "eligible"
+                ? prompt.section.text.slice(0, 72)
+                : prompt.policy.message
+              : promptArtifact?.brief.title}
+          </strong>
+          {prompt.kind !== "selection" || prompt.policy.status === "eligible" ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (prompt.kind === "selection") void scanSelection(prompt);
+                else if (promptArtifact) {
+                  restoreFocus.current =
+                    articleRef.current?.querySelector<HTMLElement>(promptArtifact.brief.anchor.dom_selector) ?? null;
+                  openArtifact(promptArtifact, true);
+                }
+              }}
+            >
+              {promptLabel}
+            </button>
+          ) : null}
         </div>
       ) : null}
 

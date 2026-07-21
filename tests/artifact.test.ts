@@ -1,9 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { THREE_JS_URL, validateArtifact, withArtifactCsp } from "@/lib/artifact";
+import { generatorInstructions, THREE_JS_URL, validateArtifact, withArtifactCsp } from "@/lib/artifact";
+import type { VisualizationBrief } from "@/lib/types";
 
 const valid2d = `<!doctype html><html><head><style>body{color:white}</style></head><body><label>Speed<input id="speed" type="range" min="0" max="1"></label><canvas></canvas><p>What you're seeing: speed changes the motion.</p><script>document.getElementById('speed').addEventListener('input',()=>{}); window.parent.postMessage({ready:true}, '*')</script></body></html>`;
 
 describe("artifact validation", () => {
+  const brief = {
+    span_id: "s-1",
+    anchor: { section: "Geometry", element_type: "paragraph", dom_selector: "#p-1", text_excerpt: "A spatial surface." },
+    title: "Spatial surface",
+    concept: "A spatial surface",
+    viz_kind: "3d-scene",
+    render: "3d",
+    governing_math: "z = x + y",
+    grounding_terms: ["spatial surface"],
+    references: [],
+    parameters: [{ name: "Height", symbol: "z", default: 1, min: 0, max: 2, unit: "" }],
+    expected_behavior: "The surface height changes.",
+    score: 0.9,
+  } satisfies VisualizationBrief;
+
+  it("gives 3D generation an explicit Three.js scene and lifecycle contract", () => {
+    const instructions = generatorInstructions(brief);
+    expect(instructions).toContain(THREE_JS_URL);
+    expect(instructions).toContain("THREE.Scene");
+    expect(instructions).toContain("WebGLRenderer");
+    expect(instructions).toContain("ResizeObserver");
+    expect(instructions).toContain("dispose");
+    expect(instructions).toContain("pagehide");
+    expect(instructions).toContain("pointer drag");
+    expect(instructions).toContain("first complete frame");
+  });
+
+  it("keeps Three.js out of the 2D generation contract", () => {
+    const instructions = generatorInstructions({ ...brief, viz_kind: "interactive-plot", render: "2d" });
+    expect(instructions).not.toContain(THREE_JS_URL);
+    expect(instructions).not.toContain("THREE.Scene");
+  });
+
   it("accepts a self-contained 2D artifact", () => {
     expect(validateArtifact(valid2d, "2d")).toMatchObject({ ok: true, errors: [] });
   });
