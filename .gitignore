@@ -7,3 +7,6 @@ coverage
 *.tsbuildinfo
 .DS_Store
 .vercel
+
+# local design reference — issue #12 board export (mockup PNGs + annotated wireframe HTML), never committed
+design/
