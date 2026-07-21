@@ -1,11 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactResult, VisualizationBrief } from "@/lib/types";
 
-const { generateArtifactMock, promoteArtifactTaskMock, repairRuntimeFailureMock } = vi.hoisted(() => ({
+const { generateArtifactMock, promoteArtifactTaskMock, repairRuntimeFailureMock, runtimeRecords } = vi.hoisted(() => ({
   generateArtifactMock: vi.fn(),
   promoteArtifactTaskMock: vi.fn(),
   repairRuntimeFailureMock: vi.fn(),
+  runtimeRecords: new Map<string, unknown>(),
 }));
+
+vi.mock("@vercel/functions", () => ({
+  getCache: () => ({
+    get: vi.fn(async (key: string) => runtimeRecords.get(key) ?? null),
+    set: vi.fn(async (key: string, value: unknown) => {
+      runtimeRecords.set(key, structuredClone(value));
+    }),
+    delete: vi.fn(async (key: string) => {
+      runtimeRecords.delete(key);
+    }),
+    expireTag: vi.fn(async () => undefined),
+  }),
+}));
+
+vi.mock("next/cache", () => ({ unstable_cache: (work: unknown) => work }));
 
 vi.mock("@/lib/artifact", () => ({
   ArtifactQueueFullError: class ArtifactQueueFullError extends Error {},
@@ -20,6 +36,7 @@ import {
   registerArtifactBriefs,
   repairCachedArtifact,
   resetArtifactCacheForTests,
+  synchronizeArtifactBriefs,
 } from "@/lib/artifact-cache";
 import { OpenAIConfigurationError } from "@/lib/openai";
 import { emptyRepairState } from "@/lib/types";
@@ -57,6 +74,8 @@ describe("server-owned artifact cache", () => {
     generateArtifactMock.mockReset();
     promoteArtifactTaskMock.mockReset();
     repairRuntimeFailureMock.mockReset();
+    runtimeRecords.clear();
+    delete process.env.VERCEL;
   });
 
   afterEach(() => {
@@ -71,6 +90,26 @@ describe("server-owned artifact cache", () => {
     expect(first[0].artifactId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(second[0].artifactId).toBe(first[0].artifactId);
     expect(otherTarget[0].artifactId).not.toBe(first[0].artifactId);
+  });
+
+  it("restores an artifact across isolated Vercel functions and reuses the durable result", async () => {
+    process.env.VERCEL = "1";
+    generateArtifactMock.mockResolvedValue(validResult);
+    const registered = registerArtifactBriefs("https://example.com/paper", [brief]);
+    await synchronizeArtifactBriefs(registered);
+
+    resetArtifactCacheForTests();
+    await expect(generateCachedArtifact(registered[0].artifactId)).resolves.toMatchObject({
+      ok: true,
+      cached: false,
+    });
+
+    resetArtifactCacheForTests();
+    await expect(generateCachedArtifact(registered[0].artifactId)).resolves.toMatchObject({
+      ok: true,
+      cached: true,
+    });
+    expect(generateArtifactMock).toHaveBeenCalledTimes(1);
   });
 
   it("uses a stable variant key to distinguish selected ranges on the same anchor", () => {
