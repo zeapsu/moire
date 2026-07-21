@@ -73,16 +73,15 @@ describe("document sanitization and indexing", () => {
     expect(result.html).not.toContain('target="_blank"');
   });
 
-  it("keeps absolute same-document references inside the Moiré reader", () => {
+  it("keeps absolute same-document references inside any Moiré reader", () => {
     const result = sanitizeAndIndex(
-      `<article><h1 id="intro">Introduction</h1><p><a href="https://arxiv.org/html/2106.09685v2#intro">Return to introduction</a> with enough surrounding explanation to be useful. <a href="https://arxiv.org/html/2106.09685v2#inline-note">Read note</a>.</p><span id="inline-note">An inline note target.</span><a href="https://arxiv.org/html/other-paper#intro">Other paper</a></article>`,
-      "https://arxiv.org/html/2106.09685",
-      { preserveLatexmlClasses: true },
+      `<article><h1 id="intro">Introduction</h1><p><a href="https://example.com/paper#intro">Return to introduction</a> with enough surrounding explanation to be useful. <a href="https://example.com/paper#inline-note">Read note</a>.</p><span id="inline-note">An inline note target.</span><a href="https://example.com/other-paper#intro">Other paper</a></article>`,
+      "https://example.com/paper",
     );
 
     expect(result.html).toContain('href="#p-2">Return to introduction</a>');
     expect(result.html).toContain('href="#inline-note">Read note</a>');
-    expect(result.html).toContain('href="https://arxiv.org/html/other-paper#intro"');
+    expect(result.html).toContain('href="https://example.com/other-paper#intro"');
     expect(result.html).toContain('target="_blank"');
   });
 

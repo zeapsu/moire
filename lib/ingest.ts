@@ -21,6 +21,7 @@ export class IngestError extends Error {
 
 type SanitizeOptions = {
   preserveLatexmlClasses?: boolean;
+  documentIdentity?: (url: URL) => string | null;
 };
 
 function errorDiagnostic(error: unknown): { name: string; message: string } {
@@ -40,24 +41,31 @@ function safeAbsoluteUrl(value: string, baseUrl: string): string | null {
   }
 }
 
-function sameDocumentFragment(value: string, baseUrl: string): string | null {
+function sameDocumentFragment(
+  value: string,
+  baseUrl: string,
+  documentIdentity?: SanitizeOptions["documentIdentity"],
+): string | null {
   try {
     const base = new URL(baseUrl);
     const target = new URL(value, base);
     if (!target.hash) return null;
     const exactDocument =
       target.origin === base.origin && target.pathname === base.pathname && target.search === base.search;
-    const baseArxivId = extractArxivId(base.toString())?.replace(/v\d+$/i, "");
-    const targetArxivId = extractArxivId(target.toString())?.replace(/v\d+$/i, "");
-    const sameArxivHtml =
-      base.pathname.startsWith("/html/") &&
-      target.pathname.startsWith("/html/") &&
-      Boolean(baseArxivId && targetArxivId && baseArxivId === targetArxivId);
-    if (!exactDocument && !sameArxivHtml) return null;
+    const baseIdentity = documentIdentity?.(base);
+    const targetIdentity = documentIdentity?.(target);
+    const equivalentDocument = Boolean(baseIdentity && targetIdentity && baseIdentity === targetIdentity);
+    if (!exactDocument && !equivalentDocument) return null;
     return decodeURIComponent(target.hash.slice(1));
   } catch {
     return null;
   }
+}
+
+function arxivHtmlDocumentIdentity(url: URL): string | null {
+  if (!url.pathname.startsWith("/html/")) return null;
+  const arxivId = extractArxivId(url.toString())?.replace(/v\d+$/i, "").toLowerCase();
+  return arxivId ? `arxiv:${arxivId}` : null;
 }
 
 function sectionLabel(element: Element): string {
@@ -129,7 +137,11 @@ export function sanitizeAndIndex(
     element.id = stableId;
   });
   document.querySelectorAll<HTMLAnchorElement>("a[href]").forEach((anchor) => {
-    const fragment = sameDocumentFragment(anchor.getAttribute("href") ?? "", baseUrl);
+    const fragment = sameDocumentFragment(
+      anchor.getAttribute("href") ?? "",
+      baseUrl,
+      options.documentIdentity,
+    );
     if (!fragment) return;
     const localId = sourceIds.get(fragment) ?? document.getElementById(fragment)?.id;
     if (!localId) return;
@@ -203,7 +215,10 @@ async function ingestArxiv(targetUrl: string, arxivId: string): Promise<Ingested
         sourceDom.window.document.querySelector("article.ltx_document") ??
         sourceDom.window.document.querySelector("article") ??
         sourceDom.window.document.body;
-      const indexed = sanitizeAndIndex(article.outerHTML, finalUrl, { preserveLatexmlClasses: true });
+      const indexed = sanitizeAndIndex(article.outerHTML, finalUrl, {
+        preserveLatexmlClasses: true,
+        documentIdentity: arxivHtmlDocumentIdentity,
+      });
       if (indexed.sections.length === 0) throw new Error("No readable sections");
       return {
         targetUrl,
